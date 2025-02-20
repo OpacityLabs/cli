@@ -2,7 +2,14 @@ mod config;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
-use darklua_core::{process, GeneratorParameters, Options, Resources};
+use darklua_core::rules::bundle::BundleRequireMode;
+use darklua_core::rules::{
+    RemoveCompoundAssignment, RemoveContinue, RemoveIfExpression, RemoveTypes, Rule,
+    RuleConfiguration, REMOVE_CONTINUE_RULE_NAME,
+};
+use darklua_core::{
+    process, BundleConfiguration, Configuration, GeneratorParameters, Options, Resources,
+};
 use std::env;
 use std::path::PathBuf;
 use std::time::Instant;
@@ -63,6 +70,25 @@ fn bundle(config_path: &str) -> Result<()> {
 
             let output = PathBuf::from(&config.settings.output_directory)
                 .join(format!("{}.bundled.lua", flow.alias));
+
+            let mut config = Configuration::empty();
+            config = config.with_bundle_configuration(
+                BundleConfiguration::new(BundleRequireMode::Path(Default::default()))
+                    .with_modules_identifier("__BUNDLE_MODULES"),
+            );
+
+            let remove_continue: Box<dyn Rule> = Box::new(RemoveContinue::default());
+            config = config.with_rule(remove_continue);
+
+            let remove_compound_assignment: Box<dyn Rule> =
+                Box::new(RemoveCompoundAssignment::default());
+            config = config.with_rule(remove_compound_assignment);
+
+            let remove_types: Box<dyn Rule> = Box::new(RemoveTypes::default());
+            config = config.with_rule(remove_types);
+
+            let remove_if_expression: Box<dyn Rule> = Box::new(RemoveIfExpression::default());
+            config = config.with_rule(remove_if_expression);
 
             let options = Options::new(&input)
                 .with_output(&output)
