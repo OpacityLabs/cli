@@ -44,7 +44,12 @@ impl Config {
         for platform in self.platforms.iter() {
             for flow in platform.flows.iter() {
                 let flow_path = std::path::Path::new(&flow.path);
-                files.push(std::path::Path::join(current_dir_path_str, flow_path).to_str().unwrap().to_string());
+                files.push(
+                    std::path::Path::join(current_dir_path_str, flow_path)
+                        .to_str()
+                        .unwrap()
+                        .to_string(),
+                );
             }
         }
         files

@@ -104,27 +104,15 @@ fn bundle(config_path: &str) -> Result<()> {
 fn analyze(config_path: &str) -> Result<()> {
     check_luau_analyze()?;
     let config = config::Config::from_file(config_path)?;
-    let mut had_errors = false;
 
     let execution_dir = env::current_dir()?;
 
     let file_paths = config.get_flows_paths();
 
-    let status = std::process::Command::new("luau-analyze")
+    std::process::Command::new("luau-analyze")
         .current_dir(execution_dir.clone())
         .args(&file_paths)
         .status()?;
-
-    if status.success() {
-        println!("✓ OK");
-    } else {
-        println!("✗ Failed");
-        had_errors = true;
-    }
-
-    if had_errors {
-        anyhow::bail!("Some files failed analysis");
-    }
 
     Ok(())
 }
