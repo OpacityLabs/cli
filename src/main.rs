@@ -69,7 +69,7 @@ fn bundle(config_path: &str) -> Result<()> {
             let input = PathBuf::from(&flow.path);
 
             let output = PathBuf::from(&config.settings.output_directory)
-                .join(format!("{}.bundled.lua", flow.alias));
+                .join(format!("{}.bundle.lua", flow.alias));
 
             let mut config = Configuration::empty();
             config = config.with_bundle_configuration(
