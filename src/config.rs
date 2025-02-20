@@ -18,7 +18,7 @@ pub struct Platform {
     pub flows: Vec<Flow>,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct Flow {
     pub name: String,
     pub alias: String,
@@ -53,5 +53,17 @@ impl Config {
             }
         }
         files
+    }
+
+    #[allow(dead_code)]
+    pub fn get_flow(&self, flow_name: &str) -> Option<Flow> {
+        for platform in self.platforms.iter() {
+            for flow in platform.flows.iter() {
+                if flow.name == flow_name {
+                    return Some(flow.clone());
+                }
+            }
+        }
+        None
     }
 }
