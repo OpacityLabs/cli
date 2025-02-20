@@ -5,7 +5,6 @@ use clap::{Parser, Subcommand};
 use darklua_core::rules::bundle::BundleRequireMode;
 use darklua_core::rules::{
     RemoveCompoundAssignment, RemoveContinue, RemoveIfExpression, RemoveTypes, Rule,
-    RuleConfiguration, REMOVE_CONTINUE_RULE_NAME,
 };
 use darklua_core::{
     process, BundleConfiguration, Configuration, GeneratorParameters, Options, Resources,
@@ -109,34 +108,18 @@ fn analyze(config_path: &str) -> Result<()> {
 
     let execution_dir = env::current_dir()?;
 
-    for platform in config.platforms {
-        println!("\nAnalyzing platform: {}", platform.name);
+    let file_paths = config.get_flows_paths();
 
-        for flow in platform.flows {
-            print!("Analyzing {} ({})... ", flow.name, flow.alias);
+    let status = std::process::Command::new("luau-analyze")
+        .current_dir(execution_dir.clone())
+        .args(&file_paths)
+        .status()?;
 
-            let file_path = execution_dir.join(&flow.path);
-            let file_dir = file_path.parent().ok_or_else(|| {
-                anyhow::anyhow!("Could not get parent directory for {}", flow.path)
-            })?;
-
-            let file_name = file_path
-                .file_name()
-                .ok_or_else(|| anyhow::anyhow!("Could not get file name from {}", flow.path))?;
-
-            let status = std::process::Command::new("luau-analyze")
-                .current_dir(file_dir)
-                .arg(file_name)
-                .status()
-                .with_context(|| format!("Failed to analyze {}", flow.path))?;
-
-            if status.success() {
-                println!("✓ OK");
-            } else {
-                println!("✗ Failed");
-                had_errors = true;
-            }
-        }
+    if status.success() {
+        println!("✓ OK");
+    } else {
+        println!("✗ Failed");
+        had_errors = true;
     }
 
     if had_errors {
