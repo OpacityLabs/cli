@@ -92,7 +92,8 @@ fn bundle(config_path: &str) -> Result<()> {
 
             let options = Options::new(&input)
                 .with_output(&output)
-                .with_generator_override(GeneratorParameters::RetainLines);
+                .with_generator_override(GeneratorParameters::RetainLines)
+                .with_configuration(config);
 
             process_bundle(&resources, options)?;
         }
