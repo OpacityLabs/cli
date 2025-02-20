@@ -2,9 +2,11 @@ mod config;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
+use config::{Flow, Platform};
 use darklua_core::rules::bundle::BundleRequireMode;
 use darklua_core::rules::{
-    RemoveCompoundAssignment, RemoveContinue, RemoveIfExpression, RemoveTypes, Rule,
+    InjectGlobalValue, RemoveCompoundAssignment, RemoveContinue, RemoveIfExpression, RemoveTypes,
+    Rule,
 };
 use darklua_core::{
     process, BundleConfiguration, Configuration, GeneratorParameters, Options, Resources,
@@ -54,16 +56,39 @@ fn process_bundle(resources: &Resources, options: Options) -> Result<()> {
     }
 }
 
+fn get_global_inject_rules(platform: &Platform, flow: &Flow) -> Vec<Box<dyn Rule>> {
+    vec![
+        Box::new(InjectGlobalValue::string("FLOW_NAME", flow.name.clone())),
+        Box::new(InjectGlobalValue::string("FLOW_ALIAS", flow.alias.clone())),
+        Box::new(InjectGlobalValue::string(
+            "MIN_SDK_VERSION",
+            flow.min_sdk_version.clone(),
+        )),
+        Box::new(InjectGlobalValue::string(
+            "RETRIEVES",
+            flow.retrieves.join(", "),
+        )),
+        Box::new(InjectGlobalValue::string(
+            "PLATFORM_NAME",
+            platform.name.clone(),
+        )),
+        Box::new(InjectGlobalValue::string(
+            "PLATFORM_DESCRIPTION",
+            platform.description.clone(),
+        )),
+    ]
+}
+
 fn bundle(config_path: &str) -> Result<()> {
     let config = config::Config::from_file(config_path)?;
     let resources = Resources::from_file_system();
 
     std::fs::create_dir_all(&config.settings.output_directory)?;
 
-    for platform in config.platforms {
+    for platform in &config.platforms {
         println!("Processing platform: {}", platform.name);
 
-        for flow in platform.flows {
+        for flow in &platform.flows {
             println!("Bundling {} ({})", flow.name, flow.alias);
             let input = PathBuf::from(&flow.path);
 
@@ -76,18 +101,20 @@ fn bundle(config_path: &str) -> Result<()> {
                     .with_modules_identifier("__BUNDLE_MODULES"),
             );
 
-            let remove_continue: Box<dyn Rule> = Box::new(RemoveContinue::default());
-            config = config.with_rule(remove_continue);
+            let rules: Vec<Box<dyn Rule>> = vec![
+                Box::new(RemoveContinue::default()),
+                Box::new(RemoveCompoundAssignment::default()),
+                Box::new(RemoveTypes::default()),
+                Box::new(RemoveIfExpression::default()),
+            ];
+            let rules = rules
+                .into_iter()
+                .chain(get_global_inject_rules(platform, flow))
+                .collect::<Vec<Box<dyn Rule>>>();
 
-            let remove_compound_assignment: Box<dyn Rule> =
-                Box::new(RemoveCompoundAssignment::default());
-            config = config.with_rule(remove_compound_assignment);
-
-            let remove_types: Box<dyn Rule> = Box::new(RemoveTypes::default());
-            config = config.with_rule(remove_types);
-
-            let remove_if_expression: Box<dyn Rule> = Box::new(RemoveIfExpression::default());
-            config = config.with_rule(remove_if_expression);
+            for rule in rules {
+                config = config.with_rule(rule);
+            }
 
             let options = Options::new(&input)
                 .with_output(&output)
