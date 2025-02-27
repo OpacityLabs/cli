@@ -3,7 +3,7 @@ name = "opacity-cli"
 version = "0.1.0"
 edition = "2021"
 authors = ["OpacityLabs"]
-description = "A CLI tool for bundling and analyzing Opacity files"
+description = "A CLI tool for bundling and analyzing Luau files"
 
 [dependencies]
 anyhow = "1.0.95"
