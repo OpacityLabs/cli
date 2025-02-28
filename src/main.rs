@@ -1,7 +1,7 @@
 mod config;
 
 use anyhow::{Context, Result};
-use clap::{Parser, Subcommand};
+use clap::{CommandFactory, Parser, Subcommand};
 use config::{Flow, Platform};
 use darklua_core::rules::bundle::BundleRequireMode;
 use darklua_core::rules::{
@@ -33,6 +33,13 @@ enum Commands {
 
     /// Analyze all Luau files
     Analyze,
+
+    /// Generate completions for a given shell
+    #[command(name = "completions")]
+    GenerateCompletions {
+        /// The shell to generate completions for
+        shell: String,
+    },
 }
 
 fn check_luau_analyze() -> Result<()> {
@@ -144,12 +151,26 @@ fn analyze(config_path: &str) -> Result<()> {
     Ok(())
 }
 
+fn generate_completions(shell: &str) -> Result<()> {
+    let mut app = Cli::command();
+
+    match shell {
+        "bash" => clap_complete::generate(clap_complete::shells::Bash, &mut app, "opacity-cli", &mut std::io::stdout()),
+        "zsh" => clap_complete::generate(clap_complete::shells::Zsh, &mut app, "opacity-cli", &mut std::io::stdout()),
+        "fish" => clap_complete::generate(clap_complete::shells::Fish, &mut app, "opacity-cli", &mut std::io::stdout()),
+        "powershell" => clap_complete::generate(clap_complete::shells::PowerShell, &mut app, "opacity-cli", &mut std::io::stdout()),
+        _ => anyhow::bail!("Unsupported shell: {}", shell),
+    }
+    Ok(())
+}
+
 fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
         Commands::Bundle => bundle(&cli.config)?,
         Commands::Analyze => analyze(&cli.config)?,
+        Commands::GenerateCompletions { shell } => generate_completions(&shell)?,
     }
 
     Ok(())
