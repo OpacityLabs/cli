@@ -24,8 +24,8 @@ pub struct Flow {
     pub alias: String,
     pub description: String,
     #[serde(rename = "minSdkVersion")]
-    pub min_sdk_version: String,
-    pub retrieves: Vec<String>,
+    pub min_sdk_version: Option<String>,
+    pub retrieves: Option<Vec<String>>,
     pub path: String,
 }
 

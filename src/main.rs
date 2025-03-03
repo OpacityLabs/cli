@@ -64,17 +64,9 @@ fn process_bundle(resources: &Resources, options: Options) -> Result<()> {
 }
 
 fn get_global_inject_rules(platform: &Platform, flow: &Flow) -> Vec<Box<dyn Rule>> {
-    vec![
+    let mut rules: Vec<Box<dyn Rule>> = vec![
         Box::new(InjectGlobalValue::string("FLOW_NAME", flow.name.clone())),
         Box::new(InjectGlobalValue::string("FLOW_ALIAS", flow.alias.clone())),
-        Box::new(InjectGlobalValue::string(
-            "MIN_SDK_VERSION",
-            flow.min_sdk_version.clone(),
-        )),
-        Box::new(InjectGlobalValue::string(
-            "RETRIEVES",
-            flow.retrieves.join(", "),
-        )),
         Box::new(InjectGlobalValue::string(
             "PLATFORM_NAME",
             platform.name.clone(),
@@ -83,7 +75,23 @@ fn get_global_inject_rules(platform: &Platform, flow: &Flow) -> Vec<Box<dyn Rule
             "PLATFORM_DESCRIPTION",
             platform.description.clone(),
         )),
-    ]
+    ];
+
+    if let Some(min_sdk_version) = &flow.min_sdk_version {
+        rules.push(Box::new(InjectGlobalValue::string(
+            "MIN_SDK_VERSION",
+            min_sdk_version.clone(),
+        )));
+    }
+
+    if let Some(retrieves) = &flow.retrieves {
+        rules.push(Box::new(InjectGlobalValue::string(
+            "RETRIEVES",
+            retrieves.join(", "),
+        )));
+    }
+
+    rules
 }
 
 fn bundle(config_path: &str) -> Result<()> {
@@ -155,10 +163,30 @@ fn generate_completions(shell: &str) -> Result<()> {
     let mut app = Cli::command();
 
     match shell {
-        "bash" => clap_complete::generate(clap_complete::shells::Bash, &mut app, "opacity-cli", &mut std::io::stdout()),
-        "zsh" => clap_complete::generate(clap_complete::shells::Zsh, &mut app, "opacity-cli", &mut std::io::stdout()),
-        "fish" => clap_complete::generate(clap_complete::shells::Fish, &mut app, "opacity-cli", &mut std::io::stdout()),
-        "powershell" => clap_complete::generate(clap_complete::shells::PowerShell, &mut app, "opacity-cli", &mut std::io::stdout()),
+        "bash" => clap_complete::generate(
+            clap_complete::shells::Bash,
+            &mut app,
+            "opacity-cli",
+            &mut std::io::stdout(),
+        ),
+        "zsh" => clap_complete::generate(
+            clap_complete::shells::Zsh,
+            &mut app,
+            "opacity-cli",
+            &mut std::io::stdout(),
+        ),
+        "fish" => clap_complete::generate(
+            clap_complete::shells::Fish,
+            &mut app,
+            "opacity-cli",
+            &mut std::io::stdout(),
+        ),
+        "powershell" => clap_complete::generate(
+            clap_complete::shells::PowerShell,
+            &mut app,
+            "opacity-cli",
+            &mut std::io::stdout(),
+        ),
         _ => anyhow::bail!("Unsupported shell: {}", shell),
     }
     Ok(())
