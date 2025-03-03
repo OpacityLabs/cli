@@ -10,6 +10,28 @@ A command-line tool for bundling and analyzing Luau files. This tool provides a 
 - **Platform Organization**: Organize your Luau modules by platform and flows
 - **Configurable**: Easy-to-use TOML configuration
 
+
+
+### Installation
+
+```bash
+brew install luau
+cargo install --git https://github.com/OpacityLabs/cli
+```
+ 
+
+### Usage
+
+```bash
+opacity-cli bundle --config config.toml
+```
+
+```bash
+opacity-cli analyze --config config.toml
+```
+
+
+
 ### Generating Completions
 
 To generate completions for the CLI, run the following command:
