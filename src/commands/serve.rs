@@ -44,7 +44,7 @@ async fn read_flow(name: &str) -> Result<FlowResponse, String> {
         .find(|flow| flow.alias == name)
         .ok_or_else(|| String::from("Flow not found"))?;
 
-    let script_path = PathBuf::from("./bundled").join(format!("{}.bundle.lua", name));
+    let script_path = PathBuf::from(config.settings.output_directory).join(format!("{}.bundle.lua", name));
     let script_content =
         fs::read_to_string(script_path).map_err(|_| String::from("Script file not found"))?;
 
@@ -68,7 +68,7 @@ async fn flows(Query(query): Query<FlowQuery>) -> Response {
             let (status, message) = match e.as_str() {
                 "Flow not found" => (axum::http::StatusCode::NOT_FOUND, "Flow not found"),
                 "Script file not found" => (
-                    axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                    axum::http::StatusCode::NOT_FOUND,
                     "Script file not found",
                 ),
                 _ => (
