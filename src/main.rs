@@ -1,7 +1,11 @@
-mod config;
+pub mod config;
+mod commands {
+    pub mod serve;
+}
 
 use anyhow::{Context, Result};
 use clap::{CommandFactory, Parser, Subcommand};
+use commands::serve::serve;
 use config::{Flow, Platform};
 use darklua_core::rules::bundle::BundleRequireMode;
 use darklua_core::rules::{
@@ -14,6 +18,7 @@ use darklua_core::{
 use std::env;
 use std::path::PathBuf;
 use std::time::Instant;
+use tracing::Level;
 use which::which;
 
 #[derive(Parser)]
@@ -40,6 +45,9 @@ enum Commands {
         /// The shell to generate completions for
         shell: String,
     },
+
+    /// Serve Lua flows over HTTP
+    Serve,
 }
 
 fn check_luau_analyze() -> Result<()> {
@@ -192,14 +200,22 @@ fn generate_completions(shell: &str) -> Result<()> {
     Ok(())
 }
 
-fn main() -> Result<()> {
+async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
-
-    match cli.command {
+    match &cli.command {
         Commands::Bundle => bundle(&cli.config)?,
         Commands::Analyze => analyze(&cli.config)?,
-        Commands::GenerateCompletions { shell } => generate_completions(&shell)?,
+        Commands::GenerateCompletions { shell } => generate_completions(shell)?,
+        Commands::Serve => serve().await?,
     }
-
     Ok(())
+}
+
+#[tokio::main]
+async fn main() -> Result<()> {
+    let console_subscriber = tracing_subscriber::fmt::Subscriber::builder()
+        .with_max_level(Level::INFO)
+        .finish();
+    tracing::subscriber::set_global_default(console_subscriber).unwrap();
+    run().await.map_err(|err| anyhow::anyhow!("Error: {}", err))
 }
