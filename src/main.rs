@@ -162,12 +162,17 @@ fn analyze(config_path: &str) -> Result<()> {
 
     let file_paths = config.get_flows_paths();
 
-    std::process::Command::new("luau-lsp")
+    let status = std::process::Command::new("luau-lsp")
+        .stdout(std::process::Stdio::inherit())
         .current_dir(execution_dir.clone())
         .arg("analyze")
         .args(&definition_files_args)
         .args(&file_paths)
         .status()?;
+
+    if status.code().unwrap_or(-1) != 0 {
+        anyhow::bail!("luau-lsp analysis failed");
+    }
 
     Ok(())
 }
