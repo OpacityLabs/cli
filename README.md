@@ -33,7 +33,7 @@ opacity-cli bundle --config config.toml
 # Analyze your Luau files with luau-lsp
 opacity-cli analyze --config config.toml
 
-# Serve your Luau files (--watch will auto bundle them on each save)
+# Serve your Luau files, (--watch / -w) will auto bundle them on each save
 opacity-cli serve --watch
 ```
 
