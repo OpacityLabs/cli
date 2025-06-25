@@ -9,6 +9,7 @@ A command-line tool for bundling and analyzing Luau files. This tool provides a 
 - **Generate Completions**: Generate completions for the CLI
 - **Platform Organization**: Organize your Luau modules by platform and flows
 - **Configurable**: Easy-to-use TOML configuration
+- **Auto bundle and serve**: Bundles and serves Luau files on save
 
 
 
@@ -28,6 +29,10 @@ opacity-cli bundle --config config.toml
 
 ```bash
 opacity-cli analyze --config config.toml
+```
+
+```bash
+opacity-cli watch --config config.toml
 ```
 
 
