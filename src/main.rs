@@ -15,11 +15,18 @@ use darklua_core::rules::{
 use darklua_core::{
     process, BundleConfiguration, Configuration, GeneratorParameters, Options, Resources,
 };
+
 use std::env;
+use std::path::Path;
 use std::path::PathBuf;
 use std::time::Instant;
 use tracing::Level;
 use which::which;
+
+use notify::{Watcher, RecursiveMode, RecommendedWatcher, Event};
+use notify::event::{ModifyKind, EventKind, DataChange};
+use tokio::sync::mpsc;
+
 
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
@@ -33,7 +40,7 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Bundle all Luau files
+    /// Bundle all Luau files testtest
     Bundle,
 
     /// Analyze all Luau files
@@ -48,6 +55,9 @@ enum Commands {
 
     /// Serve Lua flows over HTTP
     Serve,
+
+    /// Bundle and serve all Luau files on a file change
+    Watch,
 }
 
 fn check_luau_analyze() -> Result<()> {
@@ -167,6 +177,33 @@ fn analyze(config_path: &str) -> Result<()> {
     Ok(())
 }
 
+
+async fn watch(config_path: &str) -> notify::Result<()> {
+    let (tx, mut rx) = mpsc::channel::<Event>(100);
+
+    let mut watcher: RecommendedWatcher = notify::recommended_watcher(move |res| {
+        if let Ok(event) = res {
+            let _ = tx.try_send(event);
+        } else if let Err(e) = res {
+            eprintln!("Watch error: {:?}", e);
+        }
+    })?;
+
+    watcher.watch(Path::new("src"), RecursiveMode::Recursive)?;
+    watcher.watch(Path::new(config_path), RecursiveMode::NonRecursive)?;
+    println!("Watching all files in 'src' and '{}'", config_path);
+
+    while let Some(_event) = rx.recv().await {
+        if _event.kind == EventKind::Modify(ModifyKind::Data(DataChange::Content)) {
+            let _ = bundle(config_path);
+            let _ = serve().await;
+        }
+    }
+
+    Ok(())
+}
+
+
 fn generate_completions(shell: &str) -> Result<()> {
     let mut app = Cli::command();
 
@@ -207,6 +244,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         Commands::Analyze => analyze(&cli.config)?,
         Commands::GenerateCompletions { shell } => generate_completions(shell)?,
         Commands::Serve => serve().await?,
+        Commands::Watch => watch(&cli.config).await?,
     }
     Ok(())
 }
