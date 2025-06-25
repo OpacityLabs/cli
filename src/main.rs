@@ -51,7 +51,7 @@ enum Commands {
 async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
     match &cli.command {
-        Commands::Bundle => bundle(&cli.config)?,
+        Commands::Bundle => bundle(&cli.config, false)?,
         Commands::Analyze => analyze(&cli.config)?,
         Commands::GenerateCompletions { shell } => generate_completions(shell)?,
         Commands::Serve { watch } => serve(&cli.config, watch).await?,

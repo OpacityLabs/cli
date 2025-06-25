@@ -12,6 +12,7 @@ use darklua_core::{
 use std::path::PathBuf;
 use std::time::Instant;
 use anyhow::Result;
+use tracing::info;
 
 
 fn get_global_inject_rules(platform: &Platform, flow: &Flow) -> Vec<Box<dyn Rule>> {
@@ -62,7 +63,7 @@ fn process_bundle(resources: &Resources, options: Options) -> Result<()> {
     }
 }
 
-pub fn bundle(config_path: &str) -> Result<()> {
+pub fn bundle(config_path: &str, is_rebundle: bool) -> Result<()> {
     let config = config::Config::from_file(config_path)?;
     let resources = Resources::from_file_system();
 
@@ -106,6 +107,12 @@ pub fn bundle(config_path: &str) -> Result<()> {
 
             process_bundle(&resources, options)?;
         }
+    }
+
+    if is_rebundle {
+        info!("Rebundled all flows successfully");
+    } else {
+        info!("Bundled all flows successfully");
     }
 
     Ok(())

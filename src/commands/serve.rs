@@ -119,11 +119,11 @@ async fn watch(config_path: &str) -> notify::Result<()> {
 
     watcher.watch(Path::new("src"), RecursiveMode::Recursive)?;
     watcher.watch(Path::new(config_path), RecursiveMode::NonRecursive)?;
-    println!("Watching all files in 'src' and '{}'", config_path);
+    info!("Watching all files in 'src' and '{}'", config_path);
 
     while let Some(_event) = rx.recv().await {
         if _event.kind == EventKind::Modify(ModifyKind::Data(DataChange::Content)) {
-            let _ = bundle(config_path);
+            let _ = bundle(config_path, true);
         }
     }
 
