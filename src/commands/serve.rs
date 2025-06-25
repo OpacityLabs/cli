@@ -34,7 +34,6 @@ struct SessionResponse {
 }
 
 async fn read_flow(name: &str) -> Result<FlowResponse, String> {
-
     let config = crate::config::Config::from_file("./opacity.toml").unwrap();
 
     let matched_flow = config
@@ -44,7 +43,8 @@ async fn read_flow(name: &str) -> Result<FlowResponse, String> {
         .find(|flow| flow.alias == name)
         .ok_or_else(|| String::from("Flow not found"))?;
 
-    let script_path = PathBuf::from(config.settings.output_directory).join(format!("{}.bundle.lua", name));
+    let script_path =
+        PathBuf::from(config.settings.output_directory).join(format!("{}.bundle.lua", name));
     let script_content =
         fs::read_to_string(script_path).map_err(|_| String::from("Script file not found"))?;
 
@@ -52,7 +52,10 @@ async fn read_flow(name: &str) -> Result<FlowResponse, String> {
         name: matched_flow.alias.clone(),
         min_sdk: match &matched_flow.min_sdk_version {
             None => {
-                info!("No min SDK version found for flow {}; Defaulting to '1'", name);
+                info!(
+                    "No min SDK version found for flow {}; Defaulting to '1'",
+                    name
+                );
                 "1".to_string()
             }
             Some(min_sdk) => min_sdk.clone(),
@@ -67,10 +70,9 @@ async fn flows(Query(query): Query<FlowQuery>) -> Response {
         Err(e) => {
             let (status, message) = match e.as_str() {
                 "Flow not found" => (axum::http::StatusCode::NOT_FOUND, "Flow not found"),
-                "Script file not found" => (
-                    axum::http::StatusCode::NOT_FOUND,
-                    "Script file not found",
-                ),
+                "Script file not found" => {
+                    (axum::http::StatusCode::NOT_FOUND, "Script file not found")
+                }
                 _ => (
                     axum::http::StatusCode::INTERNAL_SERVER_ERROR,
                     "Error processing flow request",

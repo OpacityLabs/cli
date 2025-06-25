@@ -23,10 +23,9 @@ use std::time::Instant;
 use tracing::Level;
 use which::which;
 
-use notify::{Watcher, RecursiveMode, RecommendedWatcher, Event};
-use notify::event::{ModifyKind, EventKind, DataChange};
+use notify::event::{DataChange, EventKind, ModifyKind};
+use notify::{Event, RecommendedWatcher, RecursiveMode, Watcher};
 use tokio::sync::mpsc;
-
 
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
@@ -40,7 +39,7 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Bundle all Luau files testtest
+    /// Bundle all Luau files
     Bundle,
 
     /// Analyze all Luau files
@@ -168,7 +167,10 @@ fn analyze(config_path: &str) -> Result<()> {
     let execution_dir = env::current_dir()?;
 
     let definition_files = config.settings.definition_files.clone().unwrap_or_default();
-    let definition_files_args = definition_files.iter().flat_map(|file| ["--definitions".to_string(), file.to_string()]).collect::<Vec<String>>();
+    let definition_files_args = definition_files
+        .iter()
+        .flat_map(|file| ["--definitions".to_string(), file.to_string()])
+        .collect::<Vec<String>>();
 
     let file_paths = config.get_flows_paths();
 
@@ -186,7 +188,6 @@ fn analyze(config_path: &str) -> Result<()> {
 
     Ok(())
 }
-
 
 async fn watch(config_path: &str) -> notify::Result<()> {
     let (tx, mut rx) = mpsc::channel::<Event>(100);
@@ -212,7 +213,6 @@ async fn watch(config_path: &str) -> notify::Result<()> {
 
     Ok(())
 }
-
 
 fn generate_completions(shell: &str) -> Result<()> {
     let mut app = Cli::command();
