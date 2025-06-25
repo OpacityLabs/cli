@@ -1,41 +1,52 @@
 # Opacity CLI
 
-A command-line tool for bundling and analyzing Luau files. This tool provides a convenient way to manage Luau modules across different platforms and flows.
+A command-line tool for bundling and analyzing Luau files using luau-lsp. This tool provides a convenient way to manage Luau modules across different platforms and flows, with powerful static analysis capabilities.
 
 ## Features
 
 - **Bundling**: Bundle Luau files with configurable output formats
-- **Analysis**: Analyze Luau files with luau-analyze
+- **Static Analysis**: Analyze Luau files using luau-lsp for type checking, linting, and code quality
 - **Generate Completions**: Generate completions for the CLI
 - **Platform Organization**: Organize your Luau modules by platform and flows
 - **Configurable**: Easy-to-use TOML configuration
 - **Auto bundle and serve**: Bundles and serves Luau files on save
 
-
-
 ### Installation
 
+First, install luau-lsp (and make sure you have it in the PATH):
+
+`https://github.com/JohnnyMorganz/luau-lsp/releases`
+
+Then, install the Opacity CLI:
+
 ```bash
-brew install luau
+# Install Opacity CLI
 cargo install --git https://github.com/OpacityLabs/cli
 ```
- 
 
 ### Usage
 
 ```bash
+# Bundle your Luau files
 opacity-cli bundle --config config.toml
-```
 
-```bash
+# Analyze your Luau files with luau-lsp
 opacity-cli analyze --config config.toml
 ```
 
 ```bash
+# Bundle and serve files on save (auto)
 opacity-cli watch --config config.toml
 ```
 
+### Analysis Features
 
+The analyze command uses luau-lsp to provide:
+- Type checking
+- Linting
+- Code quality analysis
+- Error detection
+- Best practices validation
 
 ### Generating Completions
 

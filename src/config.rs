@@ -9,6 +9,7 @@ pub struct Config {
 #[derive(Debug, Deserialize, Serialize)]
 pub struct Settings {
     pub output_directory: String,
+    pub definition_files: Option<Vec<String>>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
