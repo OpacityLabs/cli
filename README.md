@@ -9,7 +9,7 @@ A command-line tool for bundling and analyzing Luau files using luau-lsp. This t
 - **Static Analysis**: Analyze Luau files using luau-lsp for type checking, linting, and code quality
 - **Generate Completions**: Generate completions for the CLI
 - **Platform Organization**: Organize your Luau modules by platform and flows
-- **Configurable**: Easy-to-use TOML configuratio
+- **Configurable**: Easy-to-use TOML configuration
 
 ### Installation
 
