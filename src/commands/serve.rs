@@ -123,7 +123,9 @@ async fn watch(config_path: &str) -> notify::Result<()> {
 
     while let Some(_event) = rx.recv().await {
         if _event.kind == EventKind::Modify(ModifyKind::Data(DataChange::Content)) {
-            let _ = bundle(config_path, true);
+            if let Err(err) = bundle(config_path, true) {
+                tracing::error!("🟥 Rebundle failed: {:?}", err)
+            }
         }
     }
 
