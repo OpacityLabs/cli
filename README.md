@@ -5,6 +5,7 @@ A command-line tool for bundling and analyzing Luau files using luau-lsp. This t
 ## Features
 
 - **Bundling**: Bundle Luau files with configurable output formats
+- **Serve Mode**: Serve bundled flows over HTTP with optional file watching
 - **Static Analysis**: Analyze Luau files using luau-lsp for type checking, linting, and code quality
 - **Generate Completions**: Generate completions for the CLI
 - **Platform Organization**: Organize your Luau modules by platform and flows
@@ -31,6 +32,9 @@ opacity-cli bundle --config config.toml
 
 # Analyze your Luau files with luau-lsp
 opacity-cli analyze --config config.toml
+
+# Serve your Luau files, (--watch / -w) will auto bundle them on each save
+opacity-cli serve --watch
 ```
 
 ### Analysis Features

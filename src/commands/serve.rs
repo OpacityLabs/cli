@@ -1,3 +1,5 @@
+use crate::commands::bundle::bundle;
+
 use axum::{
     extract::Query,
     response::{IntoResponse, Response},
@@ -11,6 +13,15 @@ use tower::ServiceBuilder;
 use tower_http::trace::{self, TraceLayer};
 use tracing::{info, Level};
 use uuid::Uuid;
+
+use anyhow::Result;
+use std::path::Path;
+
+use notify::event::{DataChange, EventKind, ModifyKind};
+use notify::{Event, RecommendedWatcher, RecursiveMode, Watcher};
+use tokio::sync::mpsc;
+
+
 
 #[derive(Deserialize)]
 struct FlowQuery {
@@ -34,7 +45,6 @@ struct SessionResponse {
 }
 
 async fn read_flow(name: &str) -> Result<FlowResponse, String> {
-
     let config = crate::config::Config::from_file("./opacity.toml").unwrap();
 
     let matched_flow = config
@@ -44,7 +54,8 @@ async fn read_flow(name: &str) -> Result<FlowResponse, String> {
         .find(|flow| flow.alias == name)
         .ok_or_else(|| String::from("Flow not found"))?;
 
-    let script_path = PathBuf::from(config.settings.output_directory).join(format!("{}.bundle.lua", name));
+    let script_path =
+        PathBuf::from(config.settings.output_directory).join(format!("{}.bundle.lua", name));
     let script_content =
         fs::read_to_string(script_path).map_err(|_| String::from("Script file not found"))?;
 
@@ -52,7 +63,10 @@ async fn read_flow(name: &str) -> Result<FlowResponse, String> {
         name: matched_flow.alias.clone(),
         min_sdk: match &matched_flow.min_sdk_version {
             None => {
-                info!("No min SDK version found for flow {}; Defaulting to '1'", name);
+                info!(
+                    "No min SDK version found for flow {}; Defaulting to '1'",
+                    name
+                );
                 "1".to_string()
             }
             Some(min_sdk) => min_sdk.clone(),
@@ -67,10 +81,9 @@ async fn flows(Query(query): Query<FlowQuery>) -> Response {
         Err(e) => {
             let (status, message) = match e.as_str() {
                 "Flow not found" => (axum::http::StatusCode::NOT_FOUND, "Flow not found"),
-                "Script file not found" => (
-                    axum::http::StatusCode::NOT_FOUND,
-                    "Script file not found",
-                ),
+                "Script file not found" => {
+                    (axum::http::StatusCode::NOT_FOUND, "Script file not found")
+                }
                 _ => (
                     axum::http::StatusCode::INTERNAL_SERVER_ERROR,
                     "Error processing flow request",
@@ -93,7 +106,33 @@ async fn sessions() -> Json<SessionResponse> {
     })
 }
 
-pub async fn serve() -> Result<(), Box<dyn std::error::Error>> {
+async fn watch(config_path: &str) -> notify::Result<()> {
+    let (tx, mut rx) = mpsc::channel::<Event>(100);
+
+    let mut watcher: RecommendedWatcher = notify::recommended_watcher(move |res| {
+        if let Ok(event) = res {
+            let _ = tx.try_send(event);
+        } else if let Err(e) = res {
+            eprintln!("Watch error: {:?}", e);
+        }
+    })?;
+
+    watcher.watch(Path::new("src"), RecursiveMode::Recursive)?;
+    watcher.watch(Path::new(config_path), RecursiveMode::NonRecursive)?;
+    info!("Watching all files in 'src' and '{}'", config_path);
+
+    while let Some(_event) = rx.recv().await {
+        if _event.kind == EventKind::Modify(ModifyKind::Data(DataChange::Content)) {
+            if let Err(err) = bundle(config_path, true) {
+                tracing::error!("🟥 Rebundle failed: {:?}", err)
+            }
+        }
+    }
+
+    Ok(())
+}
+
+pub async fn serve(config_path: &str, should_watch: &bool) -> Result<(), Box<dyn std::error::Error>> {
     let port = 8080;
     let addr = SocketAddr::from(([0, 0, 0, 0], port));
 
@@ -119,8 +158,21 @@ pub async fn serve() -> Result<(), Box<dyn std::error::Error>> {
 
     info!("Listening on port {}...", port);
 
-    let listener = tokio::net::TcpListener::bind(addr).await?;
-    axum::serve(listener, app.into_make_service()).await?;
+    if *should_watch {
+        tokio::try_join!(
+            async {
+                let listener = tokio::net::TcpListener::bind(addr).await?;
+                axum::serve(listener, app.into_make_service()).await?;
+                Ok::<_, Box<dyn std::error::Error>>(())
+            },
+            async {
+                watch(config_path).await.map_err(|e| Box::new(e) as Box<dyn std::error::Error>)
+            }
+        )?;
+    } else {
+        let listener = tokio::net::TcpListener::bind(addr).await?;
+        axum::serve(listener, app.into_make_service()).await?;
+    }
 
     Ok(())
 }
