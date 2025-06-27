@@ -1,0 +1,51 @@
+name: Build and Release
+
+on:
+  push:
+    branches: [ main ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Cache dependencies
+      uses: actions/cache@v3
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+          target
+        key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+        restore-keys: |
+          ${{ runner.os }}-cargo-
+
+    - name: Build release binary
+      run: |
+        cargo build --release
+        ls -la target/release/
+
+    - name: Rename executable
+      run: |
+        cp target/release/opacity-cli target/release/opacity-cli-linux-amd64
+        ls -la target/release/
+
+    - name: Create release
+      uses: softprops/action-gh-release@v1
+      with:
+        files: target/release/opacity-cli-linux-amd64
+        tag_name: v${{ github.run_number }}
+        name: Release v${{ github.run_number }}
+        body: |
+          Automated release for commit ${{ github.sha }}
+          
+          ## Changes
+          - Built opacity-cli for x86_64 Linux
+          - Release number: ${{ github.run_number }}
+        draft: false
+        prerelease: false
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }} 
