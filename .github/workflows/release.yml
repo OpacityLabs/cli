@@ -40,15 +40,17 @@ jobs:
       uses: softprops/action-gh-release@v1
       with:
         files: target/release/opacity-cli-linux-amd64
-        tag_name: v${{ github.run_number }}
-        name: Release v${{ github.run_number }}
+        tag_name: latest
+        name: Latest Release
         body: |
-          Automated release for commit ${{ github.sha }}
+          Latest build of opacity-cli for x86_64 Linux
           
-          ## Changes
-          - Built opacity-cli for x86_64 Linux
-          - Release number: ${{ github.run_number }}
+          ## Build Info
+          - Commit: ${{ github.sha }}
+          - Branch: ${{ github.ref_name }}
+          - Build Date: ${{ github.event.head_commit.timestamp }}
         draft: false
         prerelease: false
+        update_existing: true
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }} 
