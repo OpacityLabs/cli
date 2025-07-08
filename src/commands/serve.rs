@@ -28,6 +28,11 @@ struct FlowQuery {
     name: String,
 }
 
+#[derive(Deserialize)]
+struct FlowQueryV3 {
+    alias: String
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct FlowResponse {
@@ -77,6 +82,25 @@ async fn read_flow(name: &str) -> Result<FlowResponse, String> {
 
 async fn flows(Query(query): Query<FlowQuery>) -> Response {
     match read_flow(&query.name).await {
+        Ok(response) => Json(response).into_response(),
+        Err(e) => {
+            let (status, message) = match e.as_str() {
+                "Flow not found" => (axum::http::StatusCode::NOT_FOUND, "Flow not found"),
+                "Script file not found" => {
+                    (axum::http::StatusCode::NOT_FOUND, "Script file not found")
+                }
+                _ => (
+                    axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                    "Error processing flow request",
+                ),
+            };
+            (status, Json(serde_json::json!({ "error": message }))).into_response()
+        }
+    }
+}
+
+async fn flowsv3(Query(query): Query<FlowQueryV3>) -> Response {
+    match read_flow(&query.alias).await {
         Ok(response) => Json(response).into_response(),
         Err(e) => {
             let (status, message) = match e.as_str() {
@@ -153,6 +177,7 @@ pub async fn serve(config_path: &str, should_watch: &bool) -> Result<(), Box<dyn
     let app = Router::new()
         .route("/health", get(health))
         .route("/v2/flows", get(flows))
+        .route("/v3/flows", get(flowsv3))
         .route("/sessions", post(sessions))
         .layer(middleware);
 
