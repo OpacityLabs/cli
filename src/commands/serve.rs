@@ -39,6 +39,8 @@ struct FlowResponse {
     name: String,
     min_sdk: String,
     script: String,
+    session_id: String,
+    session_action_id: String
 }
 
 #[derive(Serialize)]
@@ -77,6 +79,8 @@ async fn read_flow(name: &str) -> Result<FlowResponse, String> {
             Some(min_sdk) => min_sdk.clone(),
         },
         script: script_content,
+        session_id: "dummy".to_string(),
+        session_action_id: "dummy-action-id".to_string()
     })
 }
 
