@@ -33,6 +33,13 @@ struct FlowQueryV3 {
     alias: String
 }
 
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum LuaScriptOwnerType {
+    Custom,
+    Opacity,
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct FlowResponse {
@@ -40,7 +47,8 @@ struct FlowResponse {
     min_sdk: String,
     script: String,
     session_id: String,
-    session_action_id: String
+    session_action_id: String,
+    owner_type: LuaScriptOwnerType,
 }
 
 #[derive(Serialize)]
@@ -80,7 +88,12 @@ async fn read_flow(name: &str) -> Result<FlowResponse, String> {
         },
         script: script_content,
         session_id: "dummy".to_string(),
-        session_action_id: "dummy-action-id".to_string()
+        session_action_id: "dummy-action-id".to_string(),
+        // the Custom type makes it so NO errors are sent to sentry
+        // WARNING! As this is also used by our clients that write
+        // their own scripts, we won't be able to see errors in
+        // sentry, even if they compile in release mode
+        owner_type: LuaScriptOwnerType::Custom,
     })
 }
 
