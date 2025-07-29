@@ -127,11 +127,10 @@ pub fn bundle(config_path: &str, is_rebundle: bool) -> Result<()> {
 
     let hashes = compute_hashes(&mut file_paths)?;
 
+    let mut config_path_dir_buf = PathBuf::from(config_path);
+    config_path_dir_buf.pop();
     std::fs::write(
-        PathBuf::from(&config.settings.output_directory)
-            .parent()
-            .expect("Failed to get parent directory for the hashes file")
-            .join("hashes"),
+        config_path_dir_buf.join("hashes.lock"),
         hashes
             .iter()
             .map(|(path, hash)| format!("{}:{}", path, hash))
