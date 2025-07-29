@@ -1,6 +1,7 @@
 use crate::config;
 use crate::config::{Flow, Platform};
 
+use anyhow::Result;
 use darklua_core::rules::bundle::BundleRequireMode;
 use darklua_core::rules::{
     InjectGlobalValue, RemoveCompoundAssignment, RemoveContinue, RemoveIfExpression, RemoveTypes,
@@ -11,9 +12,7 @@ use darklua_core::{
 };
 use std::path::PathBuf;
 use std::time::Instant;
-use anyhow::Result;
 use tracing::info;
-
 
 fn get_global_inject_rules(platform: &Platform, flow: &Flow) -> Vec<Box<dyn Rule>> {
     let mut rules: Vec<Box<dyn Rule>> = vec![
@@ -46,7 +45,6 @@ fn get_global_inject_rules(platform: &Platform, flow: &Flow) -> Vec<Box<dyn Rule
     rules
 }
 
-
 fn process_bundle(resources: &Resources, options: Options) -> Result<()> {
     let process_start = Instant::now();
     let result =
@@ -63,11 +61,27 @@ fn process_bundle(resources: &Resources, options: Options) -> Result<()> {
     }
 }
 
+fn compute_hashes(file_paths: &mut Vec<PathBuf>) -> Result<Vec<(String, String)>> {
+    file_paths.sort();
+    use sha2::Digest;
+
+    let mut hashes: Vec<(String, String)> = Vec::new();
+    for file_path in file_paths {
+        let file_content = std::fs::read(file_path.clone())?;
+        let hash = format!("{:x}", sha2::Sha256::digest(&file_content));
+        hashes.push((file_path.to_string_lossy().to_string(), hash));
+    }
+
+    Ok(hashes)
+}
+
 pub fn bundle(config_path: &str, is_rebundle: bool) -> Result<()> {
     let config = config::Config::from_file(config_path)?;
     let resources = Resources::from_file_system();
 
     std::fs::create_dir_all(&config.settings.output_directory)?;
+
+    let mut file_paths: Vec<PathBuf> = Vec::new();
 
     for platform in &config.platforms {
         println!("Processing platform: {}", platform.name);
@@ -78,6 +92,8 @@ pub fn bundle(config_path: &str, is_rebundle: bool) -> Result<()> {
 
             let output = PathBuf::from(&config.settings.output_directory)
                 .join(format!("{}.bundle.lua", flow.alias));
+
+            file_paths.push(output.clone());
 
             let mut config = Configuration::empty();
             config = config.with_bundle_configuration(
@@ -108,6 +124,19 @@ pub fn bundle(config_path: &str, is_rebundle: bool) -> Result<()> {
             process_bundle(&resources, options)?;
         }
     }
+
+    let hashes = compute_hashes(&mut file_paths)?;
+
+    let mut config_path_dir_buf = PathBuf::from(config_path);
+    config_path_dir_buf.pop();
+    std::fs::write(
+        config_path_dir_buf.join("hashes.lock"),
+        hashes
+            .iter()
+            .map(|(path, hash)| format!("{}:{}", path, hash))
+            .collect::<Vec<String>>()
+            .join("\n"),
+    )?;
 
     if is_rebundle {
         info!("Rebundled all flows successfully");
