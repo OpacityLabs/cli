@@ -21,8 +21,6 @@ use notify::event::{DataChange, EventKind, ModifyKind};
 use notify::{Event, RecommendedWatcher, RecursiveMode, Watcher};
 use tokio::sync::mpsc;
 
-
-
 #[derive(Deserialize)]
 struct FlowQuery {
     name: String,
@@ -30,7 +28,7 @@ struct FlowQuery {
 
 #[derive(Deserialize)]
 struct FlowQueryV3 {
-    alias: String
+    alias: String,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -70,7 +68,7 @@ async fn read_flow(name: &str) -> Result<FlowResponse, String> {
         .ok_or_else(|| String::from("Flow not found"))?;
 
     let script_path =
-        PathBuf::from(config.settings.output_directory).join(format!("{}.bundle.lua", name));
+        PathBuf::from(config.settings.output_directory).join(format!("{}.bundle.luau", name));
     let script_content =
         fs::read_to_string(script_path).map_err(|_| String::from("Script file not found"))?;
 
@@ -173,7 +171,10 @@ async fn watch(config_path: &str) -> notify::Result<()> {
     Ok(())
 }
 
-pub async fn serve(config_path: &str, should_watch: &bool) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn serve(
+    config_path: &str,
+    should_watch: &bool,
+) -> Result<(), Box<dyn std::error::Error>> {
     let port = 8080;
     let addr = SocketAddr::from(([0, 0, 0, 0], port));
 
@@ -208,7 +209,9 @@ pub async fn serve(config_path: &str, should_watch: &bool) -> Result<(), Box<dyn
                 Ok::<_, Box<dyn std::error::Error>>(())
             },
             async {
-                watch(config_path).await.map_err(|e| Box::new(e) as Box<dyn std::error::Error>)
+                watch(config_path)
+                    .await
+                    .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)
             }
         )?;
     } else {
