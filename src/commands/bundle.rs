@@ -3,10 +3,7 @@ use crate::config::{Flow, Platform};
 
 use anyhow::Result;
 use darklua_core::rules::bundle::BundleRequireMode;
-use darklua_core::rules::{
-    InjectGlobalValue, RemoveCompoundAssignment, RemoveContinue, RemoveIfExpression, RemoveTypes,
-    Rule,
-};
+use darklua_core::rules::{InjectGlobalValue, Rule};
 use darklua_core::{
     process, BundleConfiguration, Configuration, GeneratorParameters, Options, Resources,
 };
@@ -91,7 +88,7 @@ pub fn bundle(config_path: &str, is_rebundle: bool) -> Result<()> {
             let input = PathBuf::from(&flow.path);
 
             let output = PathBuf::from(&config.settings.output_directory)
-                .join(format!("{}.bundle.lua", flow.alias));
+                .join(format!("{}.bundle.luau", flow.alias));
 
             file_paths.push(output.clone());
 
@@ -101,16 +98,7 @@ pub fn bundle(config_path: &str, is_rebundle: bool) -> Result<()> {
                     .with_modules_identifier("__BUNDLE_MODULES"),
             );
 
-            let rules: Vec<Box<dyn Rule>> = vec![
-                Box::new(RemoveContinue::default()),
-                Box::new(RemoveCompoundAssignment::default()),
-                Box::new(RemoveTypes::default()),
-                Box::new(RemoveIfExpression::default()),
-            ];
-            let rules = rules
-                .into_iter()
-                .chain(get_global_inject_rules(platform, flow))
-                .collect::<Vec<Box<dyn Rule>>>();
+            let rules = get_global_inject_rules(platform, flow);
 
             for rule in rules {
                 config = config.with_rule(rule);
