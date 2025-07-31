@@ -118,7 +118,7 @@ pub fn bundle(config_path: &str, is_rebundle: bool) -> Result<()> {
 
             let options = Options::new(&input)
                 .with_output(&output)
-                .with_generator_override(GeneratorParameters::RetainLines)
+                .with_generator_override(GeneratorParameters::Dense { column_span: 80 })
                 .with_configuration(config);
 
             process_bundle(&resources, options)?;
