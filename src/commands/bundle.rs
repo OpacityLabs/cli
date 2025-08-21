@@ -1,7 +1,10 @@
 use crate::config;
 use crate::config::{Flow, Platform};
 
+mod custom_process_bundle;
+
 use anyhow::Result;
+use custom_process_bundle::custom_process_bundle;
 use darklua_core::rules::bundle::BundleRequireMode;
 use darklua_core::rules::{InjectGlobalValue, Rule};
 use darklua_core::{
@@ -73,21 +76,23 @@ fn compute_hashes(file_paths: &mut Vec<PathBuf>) -> Result<Vec<(String, String)>
 }
 
 pub fn bundle(config_path: &str, is_rebundle: bool) -> Result<()> {
-    let config = config::Config::from_file(config_path)?;
+    let toml_config = &mut config::Config::from_file(config_path)?;
     let resources = Resources::from_file_system();
 
-    std::fs::create_dir_all(&config.settings.output_directory)?;
+    std::fs::create_dir_all(&toml_config.settings.output_directory)?;
 
     let mut file_paths: Vec<PathBuf> = Vec::new();
 
-    for platform in &config.platforms {
+    for platform in &mut toml_config.platforms {
         println!("Processing platform: {}", platform.name);
 
-        for flow in &platform.flows {
+        let cloned_platform = platform.clone();
+
+        for flow in &mut platform.flows {
             println!("Bundling {} ({})", flow.name, flow.alias);
             let input = PathBuf::from(&flow.path);
 
-            let output = PathBuf::from(&config.settings.output_directory)
+            let output = PathBuf::from(&toml_config.settings.output_directory)
                 .join(format!("{}.bundle.luau", flow.alias));
 
             file_paths.push(output.clone());
@@ -98,7 +103,7 @@ pub fn bundle(config_path: &str, is_rebundle: bool) -> Result<()> {
                     .with_modules_identifier("__BUNDLE_MODULES"),
             );
 
-            let rules = get_global_inject_rules(platform, flow);
+            let rules = get_global_inject_rules(&cloned_platform, flow);
 
             for rule in rules {
                 config = config.with_rule(rule);
@@ -110,8 +115,12 @@ pub fn bundle(config_path: &str, is_rebundle: bool) -> Result<()> {
                 .with_configuration(config);
 
             process_bundle(&resources, options)?;
+            custom_process_bundle(flow)?;
         }
     }
+
+    // Don't forget to write the config file (with the new added params)
+    std::fs::write(config_path, toml_config.serialize_to_toml_document().to_string())?;
 
     let hashes = compute_hashes(&mut file_paths)?;
 
@@ -131,6 +140,70 @@ pub fn bundle(config_path: &str, is_rebundle: bool) -> Result<()> {
     } else {
         info!("Bundled all flows successfully");
     }
+
+    Ok(())
+}
+
+#[test]
+fn make_sure_toml_inlines_tables() -> Result<()> {
+    let config_as_str = r#"[settings]
+output_directory = "bundled"
+definition_files = ["luau-global-types/_types/global.d.luau"]
+
+[[platforms]]
+name = "Bybit"
+slug = "bybit"
+description = "Cryptocurrency derivatives exchange"
+logoUrl = "https://assets.opacity.network/bybit-logo.png"
+logoColor = "\\#F7931A"
+status = "live"
+workingStatus = "active"
+flows = [
+    { name = "Borrow History", alias = "bybit:account:borrow_history", description = "Get borrow history", minSdkVersion = "1", retrieves = [
+        "borrow_history_data",
+    ], path = "src/bybit_com/flows/account/borrow_history.luau" },
+    { name = "Coin Greeks", alias = "bybit:account:coin_greeks", description = "Get coin greeks data", minSdkVersion = "1", retrieves = [
+        "coin_greeks_data",
+    ], path = "src/bybit_com/flows/account/coin-greeks.luau" },
+]
+
+[[platforms]]
+name = "Test"
+slug = "test"
+description = "Test"
+logoUrl = "https://assets.opacity.network/test-logo.png"
+logoColor = "\\#FFFFFF"
+status = "hidden"
+workingStatus = "active"
+flows = [
+    { name = "Open Browser", alias = "test:open_browser_must_succeed", description = "Open browser", path = "src/test/open_browser_must_succeed.luau", minSdkVersion = "1", retrieves = [
+        "browser_data",
+    ] },
+    { name = "Mock error", alias = "test:error", description = "Mock an error being thrown.", path = "src/test/mock_error.luau", minSdkVersion = "1", retrieves = [
+        "random_data",
+    ] },
+]"#;
+
+    let mut config: config::Config = toml::from_str(config_as_str)?;
+    let serialized_config = config.serialize_to_toml_document().to_string();
+
+    assert!(serialized_config.find("[[platforms.flows]]").is_none());
+    assert!(serialized_config.find("[[platforms.flows.params]]").is_none());
+
+    config.platforms[0].flows[0].params = Some(vec![
+        config::Param {
+            name: "test".to_string(),
+            description: "test".to_string(),
+            ty: "string".to_string(),
+            required: true,
+        }
+    ]);
+
+    let no_toml_edit_serialized_config = toml::to_string(&config)?;
+
+    println!("{}", no_toml_edit_serialized_config);
+    assert!(no_toml_edit_serialized_config.find("[[platforms.flows]]").is_some());
+    assert!(no_toml_edit_serialized_config.find("[[platforms.flows.params]]").is_some());
 
     Ok(())
 }
