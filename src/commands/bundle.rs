@@ -190,14 +190,14 @@ flows = [
     assert!(serialized_config.find("[[platforms.flows]]").is_none());
     assert!(serialized_config.find("[[platforms.flows.params]]").is_none());
 
-    config.platforms[0].flows[0].params = Some(vec![
+    config.platforms[0].flows[0].params = Some(vec![vec![
         config::Param {
             name: "test".to_string(),
             description: "test".to_string(),
             ty: "string".to_string(),
             required: true,
         }
-    ]);
+    ]]);
 
     let no_toml_edit_serialized_config = toml::to_string(&config)?;
 

@@ -34,12 +34,13 @@ impl Settings {
     pub fn serialize_to_toml(&self) -> toml_edit::Table {
         use toml_edit::*;
         let mut table = Table::new();
-        table.insert("outputDirectory", self.output_directory.clone().into());
+        table.insert("output_directory", self.output_directory.clone().into());
         if let Some(definition_files) = self.definition_files.clone() {
             let mut arr = Array::new();
             for definition_file in definition_files {
                 arr.push::<String>(definition_file.clone().into());
             }
+            table.insert("definition_files", arr.into());
         }
         table
     }
@@ -81,6 +82,8 @@ pub struct Param {
     pub required: bool,
 }
 
+pub type ParamVariant = Vec<Param>;
+
 impl Param {
     pub fn serialize_to_toml(&self) -> toml_edit::Table {
         use toml_edit::*;
@@ -103,7 +106,7 @@ pub struct Flow {
     pub retrieves: Option<Vec<String>>,
     pub path: String,
     // we'll actually write these params in the opacity.toml file based on the flow's params
-    pub params: Option<Vec<Param>>,
+    pub params: Option<Vec<ParamVariant>>,
 }
 
 impl Flow {
@@ -128,9 +131,11 @@ impl Flow {
         if let Some(params) = self.params.clone() {
             let mut arr = Array::new();
             for param in params {
-                arr.push::<Value>(toml_edit::Value::InlineTable(
-                    param.serialize_to_toml().into_inline_table(),
-                ));
+                arr.push::<Value>(toml_edit::Value::Array(Array::from_iter(param.iter().map(
+                    |param| {
+                        toml_edit::Value::InlineTable(param.serialize_to_toml().into_inline_table())
+                    },
+                ))));
             }
             table.insert("params", arr.into());
         }

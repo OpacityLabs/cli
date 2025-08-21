@@ -3,14 +3,14 @@ use std::collections::HashMap;
 use anyhow::Result;
 use full_moon::{tokenizer::TokenType, visitors::Visitor};
 
-use crate::config::{Flow, Param};
+use crate::config::{Flow, Param, ParamVariant};
 
 pub fn custom_process_bundle<'a>(flow: &'a mut Flow) -> Result<()> {
     let flow_source_code = std::fs::read_to_string(&flow.path)?;
 
     let mut ctx: Context = Context {
         flow_path: flow.path.clone(),
-        params: vec![],
+        param_variants: vec![],
         main_func: None,
         errors: vec![],
         all_types: HashMap::new(),
@@ -43,8 +43,8 @@ pub fn custom_process_bundle<'a>(flow: &'a mut Flow) -> Result<()> {
         ));
     }
 
-    if ctx.params.len() > 0 {
-        flow.params = Some(ctx.params);
+    if ctx.param_variants.len() > 0 {
+        flow.params = Some(ctx.param_variants);
     } else {
         flow.params = None;
     }
@@ -53,7 +53,7 @@ pub fn custom_process_bundle<'a>(flow: &'a mut Flow) -> Result<()> {
 }
 
 pub struct Context {
-    pub params: Vec<Param>,
+    pub param_variants: Vec<ParamVariant>,
     pub main_func: Option<full_moon::ast::FunctionDeclaration>,
     pub flow_path: String,
     pub errors: Vec<anyhow::Error>,
@@ -88,94 +88,106 @@ impl<'a> ParamVisitor<'a> {
         }
     }
 
-		/// Function used to resolve basic type of a value
-		/// 
-		/// `type Params = { category: ->string<- }`
-		fn resolve_basic_type(&self, basic: &full_moon::tokenizer::TokenReference) -> Result<String> {
-			let ty = match basic.token_type() {
-				TokenType::Identifier { identifier } => {
-					if self.is_simple_primitive_type(basic.token_type()) {
-						identifier.to_string().trim().to_string()
-					} else {
-						return Err(anyhow::anyhow!("Expected a simple primitive type, got a {:#?}", basic.token_type()));
-					}
-				}
-				TokenType::StringLiteral { .. } => {
-					// TODO: maybe handle string literals?
-					//       or add something to the description? I am not sure
-					"string".to_string()
-				}
-				TokenType::Number { .. } => {
-					// TODO: maybe handle number literals?
-					//       or add something to the description? I am not sure
-					"number".to_string()
-				},
-				_ => {
-					return Err(anyhow::anyhow!("Expected a simple primitive type, got a {:#?}", basic.token_type()));
-				}
-			};
+    /// Function used to resolve basic type of a value
+    ///
+    /// `type Params = { category: ->string<- }`
+    fn resolve_basic_type(&self, basic: &full_moon::tokenizer::TokenReference) -> Result<String> {
+        let ty = match basic.token_type() {
+            TokenType::Identifier { identifier } => {
+                if self.is_simple_primitive_type(basic.token_type()) {
+                    identifier.to_string().trim().to_string()
+                } else {
+                    return Err(anyhow::anyhow!(
+                        "Expected a simple primitive type, got a {:#?}",
+                        basic.token_type()
+                    ));
+                }
+            }
+            TokenType::StringLiteral { .. } => {
+                // TODO: maybe handle string literals?
+                //       or add something to the description? I am not sure
+                "string".to_string()
+            }
+            TokenType::Number { .. } => {
+                // TODO: maybe handle number literals?
+                //       or add something to the description? I am not sure
+                "number".to_string()
+            }
+            _ => {
+                return Err(anyhow::anyhow!(
+                    "Expected a simple primitive type, got a {:#?}",
+                    basic.token_type()
+                ));
+            }
+        };
 
-			Ok(ty)
-		}
+        Ok(ty)
+    }
 
     /// This function resolves a table type to a Param
     /// You should provide a TypeInfo::Table
-    pub fn resolve_table(&self, table: &full_moon::ast::luau::TypeInfo) -> Result<Param> {
+    pub fn resolve_table(&self, table: &full_moon::ast::luau::TypeInfo) -> Result<ParamVariant> {
         match table {
             full_moon::ast::luau::TypeInfo::Table { fields, .. } => {
-								let mut param = Param {
-									name: "".to_string(),
-									ty: "".to_string(),
-									required: true,
-									description: "".to_string(),
-								};
+                let mut param_variant: Vec<Param> = vec![];
+
                 for field in fields {
-									use full_moon::ast::luau::*;
-									let key = match field.key() {
-										TypeFieldKey::Name(name) => {
-											match name.token_type() {
-												TokenType::Identifier { identifier } => {
-													identifier.to_string().trim().to_string()
-												}
-												_ => {
-													return Err(anyhow::anyhow!("Expected an identifier as the key, got a {:#?}", name.token_type()));
-												}
-											}
-										}
-										TypeFieldKey::IndexSignature { .. } => {
-											return Err(anyhow::anyhow!("Index signature is not supported yet: check the line containing '{}'", field.to_string()));
-										},
-										_ => unreachable!()
-									};
+                    let mut param = Param {
+                        name: "".to_string(),
+                        ty: "".to_string(),
+                        required: true,
+                        description: "".to_string(),
+                    };
+                    use full_moon::ast::luau::*;
+                    let key = match field.key() {
+                        TypeFieldKey::Name(name) => match name.token_type() {
+                            TokenType::Identifier { identifier } => {
+                                identifier.to_string().trim().to_string()
+                            }
+                            _ => {
+                                return Err(anyhow::anyhow!(
+                                    "Expected an identifier as the key, got a {:#?}",
+                                    name.token_type()
+                                ));
+                            }
+                        },
+                        TypeFieldKey::IndexSignature { .. } => {
+                            return Err(anyhow::anyhow!("Index signature is not supported yet: check the line containing '{}'", field.to_string()));
+                        }
+                        _ => unreachable!(),
+                    };
 
+                    let (value, required) = match field.value() {
+                        TypeInfo::Basic(basic) => {
+                            let ty = self.resolve_basic_type(basic)?;
 
-									let (value, required) = match field.value() {
-										TypeInfo::Basic(basic) => {
-											let ty = self.resolve_basic_type(basic)?;
+                            (ty, false)
+                        }
+                        TypeInfo::Optional { base, .. } => match base.as_ref() {
+                            TypeInfo::Basic(basic) => (self.resolve_basic_type(basic)?, true),
+                            _ => {
+                                return Err(anyhow::anyhow!(
+                                    "Expected a simple primitive type, got a {:#?}",
+                                    base.to_string()
+                                ));
+                            }
+                        },
+                        _ => Err(anyhow::anyhow!(
+                            "Expected a simple primitive type, got a {:#?}",
+                            field.value().to_string()
+                        ))?,
+                    };
 
-											(ty, false)
-										},
-										TypeInfo::Optional { base, .. } => {
-											match base.as_ref() {
-												TypeInfo::Basic(basic) => {
-													(self.resolve_basic_type(basic)?, true)
-												}
-												_ => {
-													return Err(anyhow::anyhow!("Expected a simple primitive type, got a {:#?}", base.to_string()));
-												}
-											}
-										},
-										_ => Err(anyhow::anyhow!("Expected a simple primitive type, got a {:#?}", field.value().to_string()))?
-									};
+                    param.name = key;
+                    param.ty = value;
+                    param.required = required;
+                    // TODO: add a description to the param
+                    param.description = "".to_string();
 
-									param.name = key;
-									param.ty = value;
-									param.required = required;
-									// TODO: add a description to the param
-									param.description = "".to_string();
-								}
+                    param_variant.push(param);
+                }
 
-								Ok(param)
+                Ok(param_variant)
             }
             _ => Err(anyhow::anyhow!(
                 "Expected a table, got a {}",
@@ -185,7 +197,10 @@ impl<'a> ParamVisitor<'a> {
     }
 
     /// Resolves the provided type info to a
-    pub fn resolve_type_info(&self, ty: &full_moon::ast::luau::TypeInfo) -> Result<Param> {
+    pub fn resolve_type_info(
+        &self,
+        ty: &full_moon::ast::luau::TypeInfo,
+    ) -> Result<Vec<ParamVariant>> {
         use full_moon::ast::luau::*;
         fn create_err_string(s: &str) -> String {
             // format!("You can't have 'function main(params: {})', the 'params' argument has to be a table (or a union of a table and json null - Null). Either that or a simple Identifier pointing to a type declaration - such as 'function main(params: Params)'", s)
@@ -199,7 +214,7 @@ impl<'a> ParamVisitor<'a> {
                         let type_def = self.ctx.all_types.get(&identifier.to_string()).ok_or(
                             anyhow::anyhow!("Type not found: {}", identifier.to_string()),
                         )?;
-                        Ok(self.resolve_table(type_def.type_definition())?)
+                        Ok(vec![self.resolve_table(type_def.type_definition())?])
                     }
                     _ => Err(anyhow::anyhow!(
                         "Expected an identifier, got a {:#?}",
@@ -220,9 +235,18 @@ impl<'a> ParamVisitor<'a> {
             TypeInfo::Module { .. } => Err(anyhow::anyhow!(create_err_string("module"))),
             TypeInfo::Optional { .. } => Err(anyhow::anyhow!(create_err_string("optional"))),
             TypeInfo::String(..) => Err(anyhow::anyhow!(create_err_string("string"))),
-            TypeInfo::Table { .. } => Ok(self.resolve_table(ty)?),
+            TypeInfo::Table { .. } => Ok(vec![self.resolve_table(ty)?]),
             TypeInfo::Typeof { .. } => Err(anyhow::anyhow!(create_err_string("typeof"))),
-            TypeInfo::Union(..) => {
+            TypeInfo::Union(_ty_union) => {
+                /*
+                Case where we have
+
+                type Action = {action: "start", start_arg: string} | {action: "stop", stop_arg: string}
+
+                OR
+
+                type Action = "start" | "stop"
+                */
                 Err(anyhow::anyhow!(create_err_string(
                     "union - NOT YET IMPLEMENTED"
                 )))
@@ -277,7 +301,7 @@ impl<'a> ParamVisitor<'a> {
             if let Some(ty) = ty {
                 match self.resolve_type_info(ty.type_info()) {
                     Ok(ty) => {
-                        self.ctx.params.push(ty);
+                        self.ctx.param_variants = ty;
                     }
                     Err(e) => {
                         println!("{}: {}", self.ctx.flow_path, e);
@@ -356,8 +380,8 @@ impl<'a> full_moon::visitors::Visitor for ParamVisitor<'a> {
         // we've traversed the entire file and collected all the type declarations
         // now we can try and resolve the main function's params argument
         if let Err(e) = self.resolve_main_function() {
-						println!("{}: {}", self.ctx.flow_path, e);
-						self.ctx.errors.push(e);
-				}
+            println!("{}: {}", self.ctx.flow_path, e);
+            self.ctx.errors.push(e);
+        }
     }
 }
