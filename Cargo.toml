@@ -5,13 +5,17 @@ edition = "2021"
 authors = ["OpacityLabs"]
 description = "A CLI tool for bundling and analyzing Luau files"
 
+[lib]
+name = "opacity_cli"
+path = "src/lib.rs"
+
 [dependencies]
 anyhow = "1.0.95"
 clap = { version = "4.5.1", features = ["derive", "cargo"] }
 serde = { version = "1.0", features = ["derive"] }
 toml = "0.8.20"
 which = "7.0.2"
-darklua = "0.16.0"
+darklua = "0.17.1"
 serde_derive = "1.0.217"
 clap_complete = "4.5.46"
 axum = "0.8.3"
@@ -25,3 +29,4 @@ chrono = "0.4.40"
 tracing-subscriber = "0.3.19"
 notify = "6.1.1"
 sha2 = "0.10.9"
+toml_edit = "0.23.4"
