@@ -39,20 +39,20 @@ jobs:
         cp target/release/opacity-cli target/release/opacity-cli-linux-amd64
         ls -la target/release/
 
-    - name: Create release
-      uses: softprops/action-gh-release@v1
+    - name: Create or update "latest" release
+      uses: ncipollo/release-action@v1
       with:
-        files: target/release/opacity-cli-linux-amd64
-        tag_name: build-${{ github.run_number }}
-        name: Build ${{ github.run_number }}
+        artifacts: target/release/opacity-cli-linux-amd64
+        tag: latest
+        name: Latest Release
         body: |
-          Automated build of opacity-cli for x86_64 Linux
+          Latest automated build of opacity-cli for x86_64 Linux
           
           ## Build Info
           - Commit: ${{ github.sha }}
           - Branch: ${{ github.ref_name }}
           - Build Date: ${{ github.event.head_commit.timestamp }}
-        draft: false
-        prerelease: false
+        allowUpdates: true
+        replacesArtifacts: true
       env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }} 
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
