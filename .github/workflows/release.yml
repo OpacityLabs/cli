@@ -15,6 +15,9 @@ jobs:
     - name: Checkout code
       uses: actions/checkout@v4
 
+    - name: Setup Rust
+      uses: dtolnay/rust-toolchain@stable
+
     - name: Cache dependencies
       uses: actions/cache@v3
       with:
@@ -40,10 +43,10 @@ jobs:
       uses: softprops/action-gh-release@v1
       with:
         files: target/release/opacity-cli-linux-amd64
-        tag_name: latest
-        name: Latest Release
+        tag_name: build-${{ github.run_number }}
+        name: Build ${{ github.run_number }}
         body: |
-          Latest build of opacity-cli for x86_64 Linux
+          Automated build of opacity-cli for x86_64 Linux
           
           ## Build Info
           - Commit: ${{ github.sha }}
@@ -51,6 +54,5 @@ jobs:
           - Build Date: ${{ github.event.head_commit.timestamp }}
         draft: false
         prerelease: false
-        update_existing: true
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }} 
