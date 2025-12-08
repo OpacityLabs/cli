@@ -9,7 +9,6 @@ fn check_luau_lsp() -> Result<()> {
     Ok(())
 }
 
-
 pub fn analyze(config_path: &str) -> Result<()> {
     check_luau_lsp()?;
     let config = config::Config::from_file(config_path)?;

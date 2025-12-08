@@ -19,6 +19,30 @@ pub struct Platform {
     pub flows: Vec<Flow>,
 }
 
+#[derive(Debug, Clone)]
+pub struct SimplePlatform {
+    pub name: String,
+    pub description: String,
+}
+
+impl From<Platform> for SimplePlatform {
+    fn from(platform: Platform) -> Self {
+        Self {
+            name: platform.name,
+            description: platform.description,
+        }
+    }
+}
+
+impl From<&Platform> for SimplePlatform {
+    fn from(platform: &Platform) -> Self {
+        Self {
+            name: platform.name.clone(),
+            description: platform.description.clone(),
+        }
+    }
+}
+
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct Flow {
     pub name: String,

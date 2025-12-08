@@ -1,5 +1,5 @@
-use crate::config;
-use crate::config::{Flow, Platform};
+use crate::config::Flow;
+use crate::config::{self, SimplePlatform};
 
 use anyhow::Result;
 use darklua_core::rules::bundle::BundleRequireMode;
@@ -11,7 +11,7 @@ use std::path::PathBuf;
 use std::time::Instant;
 use tracing::info;
 
-fn get_global_inject_rules(platform: &Platform, flow: &Flow) -> Vec<Box<dyn Rule>> {
+fn get_global_inject_rules(platform: &SimplePlatform, flow: &Flow) -> Vec<Box<dyn Rule>> {
     let mut rules: Vec<Box<dyn Rule>> = vec![
         Box::new(InjectGlobalValue::string("FLOW_NAME", flow.name.clone())),
         Box::new(InjectGlobalValue::string("FLOW_ALIAS", flow.alias.clone())),
@@ -42,7 +42,7 @@ fn get_global_inject_rules(platform: &Platform, flow: &Flow) -> Vec<Box<dyn Rule
     rules
 }
 
-fn process_bundle(resources: &Resources, options: Options) -> Result<()> {
+pub fn process_bundle(resources: &Resources, options: Options) -> Result<()> {
     let process_start = Instant::now();
     let result =
         process(resources, options).map_err(|e| anyhow::anyhow!("Processing failed: {:?}", e))?;
@@ -72,6 +72,43 @@ fn compute_hashes(file_paths: &mut Vec<PathBuf>) -> Result<Vec<(String, String)>
     Ok(hashes)
 }
 
+pub struct BundleOptions {
+    pub opts: Options,
+    pub output: PathBuf,
+}
+
+pub fn create_options(
+    config: &config::Config,
+    platform: &SimplePlatform,
+    flow: &Flow,
+) -> Result<BundleOptions> {
+    std::fs::create_dir_all(&config.settings.output_directory)?;
+    let input = PathBuf::from(&flow.path);
+
+    let output = PathBuf::from(&config.settings.output_directory)
+        .join(format!("{}.bundle.luau", flow.alias));
+
+    let mut config = Configuration::empty();
+    config = config.with_bundle_configuration(
+        BundleConfiguration::new(BundleRequireMode::Path(Default::default()))
+            .with_modules_identifier("__BUNDLE_MODULES"),
+    );
+
+    let rules = get_global_inject_rules(platform, flow);
+
+    for rule in rules {
+        config = config.with_rule(rule);
+    }
+
+    Ok(BundleOptions {
+        opts: Options::new(&input)
+            .with_output(&output)
+            .with_generator_override(GeneratorParameters::Dense { column_span: 80 })
+            .with_configuration(config),
+        output: output.clone(),
+    })
+}
+
 pub fn bundle(config_path: &str, is_rebundle: bool) -> Result<()> {
     let config = config::Config::from_file(config_path)?;
     let resources = Resources::from_file_system();
@@ -82,34 +119,16 @@ pub fn bundle(config_path: &str, is_rebundle: bool) -> Result<()> {
 
     for platform in &config.platforms {
         println!("Processing platform: {}", platform.name);
+        let simple_platform = SimplePlatform::from(platform);
 
         for flow in &platform.flows {
             println!("Bundling {} ({})", flow.name, flow.alias);
-            let input = PathBuf::from(&flow.path);
 
-            let output = PathBuf::from(&config.settings.output_directory)
-                .join(format!("{}.bundle.luau", flow.alias));
+            let bundle_options = create_options(&config, &simple_platform, flow)?;
 
-            file_paths.push(output.clone());
+            file_paths.push(bundle_options.output.clone());
 
-            let mut config = Configuration::empty();
-            config = config.with_bundle_configuration(
-                BundleConfiguration::new(BundleRequireMode::Path(Default::default()))
-                    .with_modules_identifier("__BUNDLE_MODULES"),
-            );
-
-            let rules = get_global_inject_rules(platform, flow);
-
-            for rule in rules {
-                config = config.with_rule(rule);
-            }
-
-            let options = Options::new(&input)
-                .with_output(&output)
-                .with_generator_override(GeneratorParameters::Dense { column_span: 80 })
-                .with_configuration(config);
-
-            process_bundle(&resources, options)?;
+            process_bundle(&resources, bundle_options.opts)?;
         }
     }
 
