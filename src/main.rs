@@ -43,11 +43,11 @@ enum Commands {
         shell: String,
     },
 
-    /// Serve Lua flows over HTTP
+    /// Serve Lua flows over HTTP (and rebundle only the requested flow, if rebundle is enabled)
     Serve {
-        /// Watch for file changes and rebundle/restart
+        /// Rebundle only the requested flow, if rebundle is enabled
         #[arg(short, long)]
-        watch: bool,
+        rebundle: bool,
     },
 
     /// Compute versions for all flows
@@ -61,7 +61,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         Commands::Bundle => bundle(&cli.config, false)?,
         Commands::Analyze => analyze(&cli.config)?,
         Commands::GenerateCompletions { shell } => generate_completions(shell)?,
-        Commands::Serve { watch } => serve(&cli.config, watch).await?,
+        Commands::Serve { rebundle } => serve(&cli.config, *rebundle).await?,
         Commands::ComputeVersions => compute_versions(&cli.config)?,
     }
     Ok(())
