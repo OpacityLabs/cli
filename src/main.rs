@@ -4,16 +4,19 @@ mod commands {
     pub mod bundle;
     pub mod generate_completions;
     pub mod serve;
+    pub mod version;
 }
 
 use commands::analyze::analyze;
+use commands::bundle::bundle;
 use commands::generate_completions::generate_completions;
+use commands::serve::serve;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 use tracing::Level;
 
-use crate::commands::{bundle::bundle, serve::serve};
+use crate::commands::version::compute_versions;
 
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
@@ -46,6 +49,10 @@ enum Commands {
         #[arg(short, long)]
         rebundle: bool,
     },
+
+    /// Compute versions for all flows
+    #[command(name = "compute-versions")]
+    ComputeVersions,
 }
 
 async fn run() -> Result<(), Box<dyn std::error::Error>> {
@@ -54,8 +61,8 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         Commands::Bundle => bundle(&cli.config, false)?,
         Commands::Analyze => analyze(&cli.config)?,
         Commands::GenerateCompletions { shell } => generate_completions(shell)?,
-        // Commands::Serve { watch } => serve(&cli.config, watch).await?,
         Commands::Serve { rebundle } => serve(&cli.config, *rebundle).await?,
+        Commands::ComputeVersions => compute_versions(&cli.config)?,
     }
     Ok(())
 }
