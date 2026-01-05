@@ -1,3 +1,4 @@
+use crate::commands::version::compute_versions;
 use crate::config::Flow;
 use crate::config::{self, SimplePlatform};
 
@@ -144,6 +145,8 @@ pub fn bundle(config_path: &str, is_rebundle: bool) -> Result<()> {
             .collect::<Vec<String>>()
             .join("\n"),
     )?;
+
+    compute_versions(config_path)?;
 
     if is_rebundle {
         info!("Rebundled all flows successfully");
