@@ -65,8 +65,13 @@ fn compute_hashes(file_paths: &mut Vec<PathBuf>) -> Result<Vec<(String, String)>
 
     let mut hashes: Vec<(String, String)> = Vec::new();
     for file_path in file_paths {
-        let file_content = std::fs::read(file_path.clone())?;
-        let hash = format!("{:x}", sha2::Sha256::digest(&file_content));
+        let file_content = std::fs::read_to_string(file_path.clone())?;
+        
+        let mut hasher = sha2::Sha256::new();
+        let normalized = file_content.replace("\r\n", "\n");
+        hasher.update(normalized.as_bytes());
+        let hash = format!("{:x}", hasher.finalize());
+
         hashes.push((file_path.to_string_lossy().to_string(), hash));
     }
 
