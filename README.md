@@ -62,3 +62,15 @@ Example:
 ```bash
 opacity-cli completions zsh > ~/.oh-my-zsh/completions/_opacity-cli
 ```
+
+### Mapper testing
+
+To also have the `serve` command serve mappers, you need to create a `mappers.location` file in the root of the project with the following content:
+
+```
+<mappers-folder>
+```
+
+Where `<mappers-folder>` is the folder containing the mappers, the path has to be ABSOLUTE.
+
+To get it, just navigate to the mappers folder and run `pwd`.
