@@ -433,19 +433,6 @@ fn initialize_mappers_folder_config_and_hashmaps(
     Ok(())
 }
 
-async fn received_file(body: String) -> Response {
-    // The body is a JSON-stringified string (e.g., "\"actual content\"")
-    // Parse it to get the actual string content
-    let content: String = serde_json::from_str(&body).unwrap();
-    fs::write("received_file", content).unwrap();
-    (axum::http::StatusCode::OK, Json(serde_json::json!({ "message": "File received" }))).into_response()
-}
-
-async fn received_binary_file(body: axum::body::Bytes) -> Response {
-    fs::write("received_binary_file.bin", body).unwrap();
-    (axum::http::StatusCode::OK, Json(serde_json::json!({ "message": "Binary file received" }))).into_response()
-}
-
 pub async fn serve(
     config_path: &str,
     should_rebundle: bool,
@@ -499,8 +486,6 @@ pub async fn serve(
         .route("/sessions", post(sessions))
         .route("/resolve_mapper_alias", get(resolve_mapper_alias)) // this returns { mapper_hash: String, mapper_url: String }
         .route("/resolve_mapper_file", get(resolve_mapper_file)) // this returns the file content
-        .route("/received_file", post(received_file))
-        .route("/received_binary_file", post(received_binary_file))
         .layer(middleware);
 
     info!(
