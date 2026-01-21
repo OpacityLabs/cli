@@ -12,7 +12,13 @@ use axum::{
 use chrono::Utc;
 use darklua_core::Resources;
 use serde::{Deserialize, Serialize};
-use std::{collections::HashMap, fs, net::SocketAddr, path::PathBuf};
+use std::{
+    collections::HashMap,
+    fs,
+    net::SocketAddr,
+    path::PathBuf,
+    sync::{LazyLock, RwLock},
+};
 use tower::ServiceBuilder;
 use tower_http::trace::{self, TraceLayer};
 use tracing::{info, Level};
@@ -281,101 +287,143 @@ async fn sessions() -> Json<SessionResponse> {
 
 static SHOULD_REBUNDLE: OnceLock<bool> = OnceLock::new();
 
-static MAPPER_TO_HASH: OnceLock<HashMap<String, String>> = OnceLock::new();
-static HASH_TO_MAPPER: OnceLock<HashMap<String, String>> = OnceLock::new();
+static HASH_TO_MAPPER: LazyLock<RwLock<HashMap<String, String>>> =
+    LazyLock::new(|| RwLock::new(HashMap::new()));
 
-async fn resolve_mapper_file(
+async fn resolve_mapper_alias(
     headers: axum::http::HeaderMap,
-    Query(query): Query<ResolveMapperFileQuery>,
+    Query(query): Query<ResolveMapperAliasQuery>,
 ) -> Response {
-    let wants_binary = headers
-        .get(axum::http::header::ACCEPT)
+    let host = headers
+        .get(axum::http::header::HOST)
         .and_then(|v| v.to_str().ok())
-        .map(|v| v.contains("application/octet-stream"))
-        .unwrap_or(false);
+        .unwrap_or("localhost:8080");
 
-    match HASH_TO_MAPPER.get() {
+    match MAPPERS_CONFIG.get() {
         None => {
             return (
                 axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-                "Hash to mapper map not initialized",
+                "Mappers config not initialized",
             )
                 .into_response();
         }
-        Some(hash_to_mapper) => match hash_to_mapper.get(&query.hash) {
-            None => {
-                return (axum::http::StatusCode::NOT_FOUND, "Mapper not found").into_response();
+        Some(mappers_config) => {
+            // we need to check the bundled folder and see if there's a file with the same name as the alias
+            match MAPPERS_FOLDER.get() {
+                None => {
+                    return (
+                        axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                        "Mappers folder not initialized",
+                    )
+                        .into_response();
+                }
+                Some(mappers_folder) => {
+                    let file_path = PathBuf::from(mappers_folder)
+                        .join(mappers_config.settings.output_directory.clone())
+                        .join(format!("{}.bundle.luau", query.alias));
+
+                    match fs::read_to_string(file_path) {
+                        Ok(file_content) => {
+                            let sha256 = get_sha256(&file_content);
+                            HASH_TO_MAPPER
+                                .write()
+                                .unwrap()
+                                .insert(sha256.clone(), query.alias.clone());
+                            return Json(MapperResponse {
+                                mapper_hash: sha256.clone(),
+                                mapper_url: format!(
+                                    "http://{}/resolve_mapper_file?hash={}",
+                                    host, sha256
+                                ),
+                            })
+                            .into_response();
+                        }
+                        Err(e) => match e.downcast::<std::io::Error>() {
+                            Ok(io_error) => {
+                                if io_error.kind() == std::io::ErrorKind::NotFound {
+                                    return (axum::http::StatusCode::NOT_FOUND, "Mapper not found")
+                                        .into_response();
+                                } else {
+                                    return (
+                                        axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                                        io_error.to_string(),
+                                    )
+                                        .into_response();
+                                }
+                            }
+                            Err(e) => {
+                                return (
+                                    axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                                    e.to_string(),
+                                )
+                                    .into_response();
+                            }
+                        },
+                    }
+                }
             }
-            Some(mapper) => {
-                // now we have to get the actual alias back and return the file content
-                match MAPPERS_FOLDER.get() {
+        }
+    }
+}
+
+async fn resolve_mapper_file(Query(query): Query<ResolveMapperFileQuery>) -> Response {
+    match HASH_TO_MAPPER.read().unwrap().get(&query.hash) {
+        None => {
+            return (axum::http::StatusCode::NOT_FOUND, "Mapper not found").into_response();
+        }
+        Some(mapper) => {
+            // now we have to get the actual alias back and return the file content
+            match MAPPERS_FOLDER.get() {
+                None => {
+                    return (
+                        axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                        "Mappers folder not initialized",
+                    )
+                        .into_response();
+                }
+                Some(mappers_folder) => match MAPPERS_CONFIG.get() {
                     None => {
                         return (
                             axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-                            "Mappers folder not initialized",
+                            "Mapper config not initialized",
                         )
                             .into_response();
                     }
-                    Some(mappers_folder) => match MAPPERS_CONFIG.get() {
-                        None => {
-                            return (
-                                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-                                "Mapper config not initialized",
-                            )
-                                .into_response();
-                        }
-                        Some(mappers_config) => {
-                            let file_path = PathBuf::from(mappers_folder)
-                                .join(mappers_config.settings.output_directory.clone())
-                                .join(format!("{}.bundle.luau", mapper));
+                    Some(mappers_config) => {
+                        let file_path = PathBuf::from(mappers_folder)
+                            .join(mappers_config.settings.output_directory.clone())
+                            .join(format!("{}.bundle.luau", mapper));
 
-                            if wants_binary {
-                                let file_bytes =
-                                    fs::read(&file_path).map_err(|e| e.to_string()).unwrap();
-                                return (
-                                    [(
-                                        axum::http::header::CONTENT_TYPE,
-                                        "application/octet-stream",
-                                    )],
-                                    file_bytes,
-                                )
-                                    .into_response();
-                            } else {
-                                let file_content = fs::read_to_string(file_path)
-                                    .map_err(|e| e.to_string())
-                                    .unwrap();
+                        match fs::read_to_string(file_path) {
+                            Ok(file_content) => {
+                                let rehashed = get_sha256(&file_content);
+                                if rehashed != query.hash {
+                                    return (axum::http::StatusCode::NOT_FOUND, "Mapper file content does not match hash, file might've been modified, try resolving the mapper alias again").into_response();
+                                }
                                 return (axum::http::StatusCode::OK, file_content).into_response();
                             }
+                            Err(e) => {
+                                return (
+                                    axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                                    e.to_string(),
+                                )
+                                    .into_response();
+                            }
                         }
-                    },
-                }
+                    }
+                },
             }
-        },
+        }
     }
 }
-async fn resolve_mapper_alias(Query(query): Query<ResolveMapperAliasQuery>) -> Response {
-    match MAPPER_TO_HASH.get() {
-        None => {
-            return (
-                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-                "Mapper to hash map not initialized",
-            )
-                .into_response();
-        }
-        Some(mapper_to_hash) => match mapper_to_hash.get(&query.alias) {
-            None => {
-                return (axum::http::StatusCode::NOT_FOUND, "Mapper not found").into_response();
-            }
-            Some(hash) => {
-                return Json(MapperResponse {
-                    mapper_hash: hash.clone(),
-                    // http://localhost:8080/resolve_mapper_file?hash=...
-                    mapper_url: format!("http://localhost:8080/resolve_mapper_file?hash={}", hash),
-                })
-                .into_response();
-            }
-        },
-    }
+
+// sha256 function used when hashing mapper files in the opacity sdk
+pub fn get_sha256(payload: &str) -> String {
+    use sha2::Digest;
+    let mut hasher = sha2::Sha256::new();
+    let normalized = payload.replace("\r\n", "\n");
+    hasher.update(normalized.as_bytes());
+    format!("{:x}", hasher.finalize())
 }
 
 fn initialize_mappers_folder_config_and_hashmaps(
@@ -403,32 +451,6 @@ fn initialize_mappers_folder_config_and_hashmaps(
             .unwrap(),
         )
         .unwrap(); // should be initialized only once
-
-    // initialize the hashmaps
-    let mut mapper_to_hash = HashMap::new();
-    let mut hash_to_mapper = HashMap::new();
-
-    // so now we have to set the hashmaps
-    // we first need to read `mapper-index.json` from the mappers folder
-    let mapper_index_path = PathBuf::from(mappers_folder).join("mapper-index.json");
-    let mapper_index_content = fs::read_to_string(mapper_index_path).map_err(|e| e.to_string())?;
-
-    #[derive(Deserialize)]
-    struct MapperValue {
-        luau_hash: String,
-        #[allow(dead_code)]
-        schema_hash: String,
-    }
-
-    let mapper_index: HashMap<String, MapperValue> = serde_json::from_str(&mapper_index_content)?;
-
-    for (mapper, value) in mapper_index.iter() {
-        mapper_to_hash.insert(mapper.clone(), value.luau_hash.clone());
-        hash_to_mapper.insert(value.luau_hash.clone(), mapper.clone());
-    }
-
-    MAPPER_TO_HASH.set(mapper_to_hash).unwrap(); // should be initialized only once
-    HASH_TO_MAPPER.set(hash_to_mapper).unwrap(); // should be initialized only once
 
     Ok(())
 }
