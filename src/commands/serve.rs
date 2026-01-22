@@ -12,7 +12,13 @@ use axum::{
 use chrono::Utc;
 use darklua_core::Resources;
 use serde::{Deserialize, Serialize};
-use std::{collections::HashMap, fs, net::SocketAddr, path::PathBuf};
+use std::{
+    collections::HashMap,
+    fs,
+    net::SocketAddr,
+    path::PathBuf,
+    sync::{LazyLock, RwLock},
+};
 use tower::ServiceBuilder;
 use tower_http::trace::{self, TraceLayer};
 use tracing::{info, Level};
@@ -32,6 +38,16 @@ struct FlowQueryV3 {
     alias: String,
 }
 
+#[derive(Deserialize)]
+struct ResolveMapperAliasQuery {
+    alias: String,
+}
+
+#[derive(Deserialize)]
+struct ResolveMapperFileQuery {
+    hash: String,
+}
+
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum LuaScriptOwnerType {
@@ -48,6 +64,13 @@ struct FlowResponse {
     session_id: String,
     session_action_id: String,
     owner_type: LuaScriptOwnerType,
+}
+
+#[derive(Serialize)]
+// #[serde(rename_all = "camelCase")]
+struct MapperResponse {
+    mapper_hash: String,
+    mapper_url: String,
 }
 
 #[derive(Serialize)]
@@ -186,14 +209,11 @@ static PLATFORM_VECTOR: OnceLock<Vec<SimplePlatform>> = OnceLock::new();
 static ALIAS_TO_FLOW_MAP_AND_PLATFORM_INDEX: OnceLock<HashMap<String, (Flow, usize)>> =
     OnceLock::new();
 
+static MAPPERS_FOLDER: OnceLock<String> = OnceLock::new();
+static MAPPERS_CONFIG: OnceLock<Config> = OnceLock::new();
+
 pub fn get_platform_vector(config: &Config) -> &Vec<SimplePlatform> {
-    PLATFORM_VECTOR.get_or_init(|| {
-        config
-            .platforms
-            .iter()
-            .map(SimplePlatform::from)
-            .collect()
-    })
+    PLATFORM_VECTOR.get_or_init(|| config.platforms.iter().map(SimplePlatform::from).collect())
 }
 
 pub fn get_alias_to_platform_index_map(config: &Config) -> &HashMap<String, usize> {
@@ -267,6 +287,174 @@ async fn sessions() -> Json<SessionResponse> {
 
 static SHOULD_REBUNDLE: OnceLock<bool> = OnceLock::new();
 
+static HASH_TO_MAPPER: LazyLock<RwLock<HashMap<String, String>>> =
+    LazyLock::new(|| RwLock::new(HashMap::new()));
+
+async fn resolve_mapper_alias(
+    headers: axum::http::HeaderMap,
+    Query(query): Query<ResolveMapperAliasQuery>,
+) -> Response {
+    let host = headers
+        .get(axum::http::header::HOST)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("localhost:8080");
+
+    match MAPPERS_CONFIG.get() {
+        None => {
+            return (
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                "Mappers config not initialized",
+            )
+                .into_response();
+        }
+        Some(mappers_config) => {
+            // we need to check the bundled folder and see if there's a file with the same name as the alias
+            match MAPPERS_FOLDER.get() {
+                None => {
+                    return (
+                        axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                        "Mappers folder not initialized",
+                    )
+                        .into_response();
+                }
+                Some(mappers_folder) => {
+                    let file_path = PathBuf::from(mappers_folder)
+                        .join(mappers_config.settings.output_directory.clone())
+                        .join(format!("{}.bundle.luau", query.alias));
+
+                    match fs::read_to_string(file_path) {
+                        Ok(file_content) => {
+                            let sha256 = get_sha256(&file_content);
+                            HASH_TO_MAPPER
+                                .write()
+                                .unwrap()
+                                .insert(sha256.clone(), query.alias.clone());
+                            return Json(MapperResponse {
+                                mapper_hash: sha256.clone(),
+                                mapper_url: format!(
+                                    "http://{}/resolve_mapper_file?hash={}",
+                                    host, sha256
+                                ),
+                            })
+                            .into_response();
+                        }
+                        Err(e) => match e.downcast::<std::io::Error>() {
+                            Ok(io_error) => {
+                                if io_error.kind() == std::io::ErrorKind::NotFound {
+                                    return (axum::http::StatusCode::NOT_FOUND, "Mapper not found")
+                                        .into_response();
+                                } else {
+                                    return (
+                                        axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                                        io_error.to_string(),
+                                    )
+                                        .into_response();
+                                }
+                            }
+                            Err(e) => {
+                                return (
+                                    axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                                    e.to_string(),
+                                )
+                                    .into_response();
+                            }
+                        },
+                    }
+                }
+            }
+        }
+    }
+}
+
+async fn resolve_mapper_file(Query(query): Query<ResolveMapperFileQuery>) -> Response {
+    match HASH_TO_MAPPER.read().unwrap().get(&query.hash) {
+        None => {
+            return (axum::http::StatusCode::NOT_FOUND, "Mapper not found").into_response();
+        }
+        Some(mapper) => {
+            // now we have to get the actual alias back and return the file content
+            match MAPPERS_FOLDER.get() {
+                None => {
+                    return (
+                        axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                        "Mappers folder not initialized",
+                    )
+                        .into_response();
+                }
+                Some(mappers_folder) => match MAPPERS_CONFIG.get() {
+                    None => {
+                        return (
+                            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                            "Mapper config not initialized",
+                        )
+                            .into_response();
+                    }
+                    Some(mappers_config) => {
+                        let file_path = PathBuf::from(mappers_folder)
+                            .join(mappers_config.settings.output_directory.clone())
+                            .join(format!("{}.bundle.luau", mapper));
+
+                        match fs::read_to_string(file_path) {
+                            Ok(file_content) => {
+                                let rehashed = get_sha256(&file_content);
+                                if rehashed != query.hash {
+                                    return (axum::http::StatusCode::NOT_FOUND, "Mapper file content does not match hash, file might've been modified, try resolving the mapper alias again").into_response();
+                                }
+                                return (axum::http::StatusCode::OK, file_content).into_response();
+                            }
+                            Err(e) => {
+                                return (
+                                    axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                                    e.to_string(),
+                                )
+                                    .into_response();
+                            }
+                        }
+                    }
+                },
+            }
+        }
+    }
+}
+
+// sha256 function used when hashing mapper files in the opacity sdk
+pub fn get_sha256(payload: &str) -> String {
+    use sha2::Digest;
+    let mut hasher = sha2::Sha256::new();
+    let normalized = payload.replace("\r\n", "\n");
+    hasher.update(normalized.as_bytes());
+    format!("{:x}", hasher.finalize())
+}
+
+fn initialize_mappers_folder_config_and_hashmaps(
+    mappers_location: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    // try to read the file
+    let file_content = fs::read_to_string(mappers_location).map_err(|e| e.to_string())?;
+
+    // first line of the mappers file
+    let mappers_folder = file_content
+        .lines()
+        .next()
+        .ok_or("No mappers folder found")?
+        .to_string();
+
+    MAPPERS_FOLDER.set(mappers_folder.clone()).unwrap(); // should be initialized only once
+    MAPPERS_CONFIG
+        .set(
+            Config::from_file(
+                PathBuf::from(mappers_folder.clone())
+                    .join("opacity.toml")
+                    .to_str()
+                    .unwrap(),
+            )
+            .unwrap(),
+        )
+        .unwrap(); // should be initialized only once
+
+    Ok(())
+}
+
 pub async fn serve(
     config_path: &str,
     should_rebundle: bool,
@@ -274,6 +462,27 @@ pub async fn serve(
     // initialize everything
     get_alias_to_flow_map_and_platform_index(&Config::from_file(config_path).unwrap());
     SHOULD_REBUNDLE.get_or_init(|| should_rebundle);
+
+    match initialize_mappers_folder_config_and_hashmaps("./mappers.location") {
+        Ok(_) => {
+            info!(
+                "Mappers folder and config initialized, serving mappers from folder: {}",
+                MAPPERS_FOLDER.get().unwrap()
+            );
+        }
+        // if there is no mappers.location file, we are not going to serve mappers
+        Err(e) => match e.to_string().as_str() {
+            "File not found" => {
+                info!("No mappers.location file found, not serving mappers");
+            }
+            "No mappers folder found" => {
+                info!("No mappers folder found, not serving mappers");
+            }
+            _ => {
+                return Err(e);
+            }
+        },
+    }
 
     let port = 8080;
     let addr = SocketAddr::from(([0, 0, 0, 0], port));
@@ -297,6 +506,8 @@ pub async fn serve(
         .route("/v2/flows", get(flows))
         .route("/v3/flows", get(flowsv3_v2))
         .route("/sessions", post(sessions))
+        .route("/resolve_mapper_alias", get(resolve_mapper_alias)) // this returns { mapper_hash: String, mapper_url: String }
+        .route("/resolve_mapper_file", get(resolve_mapper_file)) // this returns the file content
         .layer(middleware);
 
     info!(
