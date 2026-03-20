@@ -305,7 +305,7 @@ async fn verify(headers: axum::http::HeaderMap, Query(query): Query<VerifyQuery>
     }
 
     // Check if sessionActionId is present
-    if let None = query.session_action_id {
+    if query.session_action_id.is_none() {
         info!("Missing sessionActionId");
         return (
             axum::http::StatusCode::BAD_REQUEST,
@@ -345,23 +345,19 @@ async fn resolve_mapper_alias(
         .unwrap_or("localhost:8080");
 
     match MAPPERS_CONFIG.get() {
-        None => {
-            return (
-                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-                "Mappers config not initialized",
-            )
-                .into_response();
-        }
+        None => (
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            "Mappers config not initialized",
+        )
+            .into_response(),
         Some(mappers_config) => {
             // we need to check the bundled folder and see if there's a file with the same name as the alias
             match MAPPERS_FOLDER.get() {
-                None => {
-                    return (
-                        axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-                        "Mappers folder not initialized",
-                    )
-                        .into_response();
-                }
+                None => (
+                    axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                    "Mappers folder not initialized",
+                )
+                    .into_response(),
                 Some(mappers_folder) => {
                     let file_path = PathBuf::from(mappers_folder)
                         .join(mappers_config.settings.output_directory.clone())
@@ -374,34 +370,31 @@ async fn resolve_mapper_alias(
                                 .write()
                                 .unwrap()
                                 .insert(sha256.clone(), query.alias.clone());
-                            return Json(MapperResponse {
+                            Json(MapperResponse {
                                 mapper_hash: sha256.clone(),
                                 mapper_url: format!(
                                     "http://{}/resolve_mapper_file?hash={}",
                                     host, sha256
                                 ),
                             })
-                            .into_response();
+                            .into_response()
                         }
                         Err(e) => match e.downcast::<std::io::Error>() {
                             Ok(io_error) => {
                                 if io_error.kind() == std::io::ErrorKind::NotFound {
-                                    return (axum::http::StatusCode::NOT_FOUND, "Mapper not found")
-                                        .into_response();
+                                    (axum::http::StatusCode::NOT_FOUND, "Mapper not found")
+                                        .into_response()
                                 } else {
-                                    return (
+                                    (
                                         axum::http::StatusCode::INTERNAL_SERVER_ERROR,
                                         io_error.to_string(),
                                     )
-                                        .into_response();
+                                        .into_response()
                                 }
                             }
                             Err(e) => {
-                                return (
-                                    axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-                                    e.to_string(),
-                                )
-                                    .into_response();
+                                (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string())
+                                    .into_response()
                             }
                         },
                     }
@@ -413,27 +406,21 @@ async fn resolve_mapper_alias(
 
 async fn resolve_mapper_file(Query(query): Query<ResolveMapperFileQuery>) -> Response {
     match HASH_TO_MAPPER.read().unwrap().get(&query.hash) {
-        None => {
-            return (axum::http::StatusCode::NOT_FOUND, "Mapper not found").into_response();
-        }
+        None => (axum::http::StatusCode::NOT_FOUND, "Mapper not found").into_response(),
         Some(mapper) => {
             // now we have to get the actual alias back and return the file content
             match MAPPERS_FOLDER.get() {
-                None => {
-                    return (
-                        axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-                        "Mappers folder not initialized",
-                    )
-                        .into_response();
-                }
+                None => (
+                    axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                    "Mappers folder not initialized",
+                )
+                    .into_response(),
                 Some(mappers_folder) => match MAPPERS_CONFIG.get() {
-                    None => {
-                        return (
-                            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-                            "Mapper config not initialized",
-                        )
-                            .into_response();
-                    }
+                    None => (
+                        axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                        "Mapper config not initialized",
+                    )
+                        .into_response(),
                     Some(mappers_config) => {
                         let file_path = PathBuf::from(mappers_folder)
                             .join(mappers_config.settings.output_directory.clone())
@@ -443,16 +430,14 @@ async fn resolve_mapper_file(Query(query): Query<ResolveMapperFileQuery>) -> Res
                             Ok(file_content) => {
                                 let rehashed = get_sha256(&file_content);
                                 if rehashed != query.hash {
-                                    return (axum::http::StatusCode::NOT_FOUND, "Mapper file content does not match hash, file might've been modified, try resolving the mapper alias again").into_response();
+                                    (axum::http::StatusCode::NOT_FOUND, "Mapper file content does not match hash, file might've been modified, try resolving the mapper alias again").into_response()
+                                } else {
+                                    (axum::http::StatusCode::OK, file_content).into_response()
                                 }
-                                return (axum::http::StatusCode::OK, file_content).into_response();
                             }
                             Err(e) => {
-                                return (
-                                    axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-                                    e.to_string(),
-                                )
-                                    .into_response();
+                                (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string())
+                                    .into_response()
                             }
                         }
                     }

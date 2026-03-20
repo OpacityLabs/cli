@@ -28,22 +28,15 @@ impl<'a> HasCallToFunctionVisitor<'a> {
 
 impl<'a> NodeProcessor for HasCallToFunctionVisitor<'a> {
     fn process_expression(&mut self, expression: &mut nodes::Expression) {
-        match expression {
-            nodes::Expression::Identifier(binary) => {
-                let name = binary.get_name().to_string();
-                if let Some(maybe_expr) = self.variable_scope.get(&name) {
-                    if let Some(expr) = maybe_expr {
-                        if let nodes::Expression::Call(call) = expr {
-                            if let nodes::Prefix::Identifier(identifier) = call.get_prefix() {
-                                if identifier.get_name().to_string() == self.function_name {
-                                    self.has_call_to_function_field = true;
-                                }
-                            }
-                        }
+        if let nodes::Expression::Identifier(binary) = expression {
+            let name = binary.get_name().to_string();
+            if let Some(Some(nodes::Expression::Call(call))) = self.variable_scope.get(&name) {
+                if let nodes::Prefix::Identifier(identifier) = call.get_prefix() {
+                    if *identifier.get_name() == self.function_name {
+                        self.has_call_to_function_field = true;
                     }
                 }
             }
-            _ => {}
         }
     }
 

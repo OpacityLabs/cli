@@ -79,11 +79,11 @@ impl DependencyGraphNode {
     }
 
     pub fn is_done(&self) -> bool {
-        return matches!(self.state, State::Processed);
+        matches!(self.state, State::Processed)
     }
 
     pub fn is_not_done(&self) -> bool {
-        return !self.is_done();
+        !self.is_done()
     }
 }
 
@@ -127,13 +127,13 @@ impl<'a> Work<'a> {
             .map(|dep| {
                 let index = match self.node_mapping.get(dep) {
                     // if we already have the dependency cached, just return the index
-                    Some(index) => index.clone(),
+                    Some(index) => *index,
                     None => {
                         // if we don't have the dependency cached, create a new node and add it to the graph
                         let node = DependencyGraphNode::create_node(dep.clone());
                         let index = self.graph.add_node(node);
                         self.node_mapping.insert(dep.clone(), index);
-                        index.clone()
+                        index
                     }
                 };
 
@@ -259,7 +259,7 @@ impl<'a> Work<'a> {
         let require_path_locator = RequirePathLocator::new(
             &path_require_mode,
             &self.get_node(node_index).path,
-            &self.resources,
+            self.resources,
         );
 
         let mut visitor = RequireDependencyProcessor::new(
@@ -269,7 +269,7 @@ impl<'a> Work<'a> {
 
         DefaultVisitor::visit_block(block, &mut visitor);
 
-        if visitor.errors().len() > 0 {
+        if !visitor.errors().is_empty() {
             return Err(anyhow::anyhow!(
                 "Failed to collect dependencies: {:?}",
                 visitor.errors()
@@ -287,7 +287,7 @@ impl<'a> Work<'a> {
         // also, recursively compute the dependency graph for them if they don't exist
         for top_node_path in &self.top_node_paths {
             let path = normalize_path(top_node_path);
-            if let Some(_) = self.node_mapping.get(&path) {
+            if self.node_mapping.contains_key(&path) {
                 continue;
             }
 
@@ -410,7 +410,7 @@ impl<'a> Work<'a> {
                 &|_, (_, node)| {
                     format!(
                         "label=\"{} - {}\"",
-                        node.path.display().to_string(),
+                        node.path.display(),
                         node.sdk_version.min_sdk_version
                     )
                 },

@@ -132,16 +132,9 @@ pub fn get_fqn(field_expression: &darklua_core::nodes::FieldExpression) -> Optio
                 field_expression.get_field().get_name()
             ))
         }
-        Prefix::Field(field) => match get_fqn(field) {
-            Some(fqn) => Some(format!(
-                "{}.{}",
-                fqn,
-                field_expression.get_field().get_name()
-            )),
-            None => None,
-        },
-        _ => {
-            return None;
+        Prefix::Field(field) => {
+            get_fqn(field).map(|fqn| format!("{}.{}", fqn, field_expression.get_field().get_name()))
         }
+        _ => None,
     }
 }

@@ -49,7 +49,7 @@ impl From<&FunctionMapping> for SdkVersionOut {
 #[derive(Debug, Clone)]
 pub struct VersionResolver<'a> {
     variable_scope: ScopedHashMap<String, Option<darklua_core::nodes::Expression>>,
-    pub scope_stack: Vec<Box<SdkVersionOut>>,
+    pub scope_stack: Vec<SdkVersionOut>,
     scope_data: SdkVersionOut,
     version_file: &'a VersionFile,
 }
@@ -102,13 +102,13 @@ impl<'a> NodeProcessor for VersionResolver<'a> {
             let function_name = if name == "pcall" {
                 // if the name is pcall, that means our function should be the first argument to the pcall function
                 let args = call.get_arguments().clone();
-                if args.len() < 1 {
+                if args.is_empty() {
                     // we don't have any arguments, return, erroneous pcall
                     return;
                 }
                 match args.to_expressions().first().unwrap() {
                     nodes::Expression::Identifier(identifier) => identifier.get_name().to_string(),
-                    nodes::Expression::Field(field) => match get_fqn(&field) {
+                    nodes::Expression::Field(field) => match get_fqn(field) {
                         Some(fqn) => fqn,
                         None => return,
                     },
@@ -215,9 +215,9 @@ fn clear_if_statement(if_statement: &mut nodes::IfStatement) {
 
 impl<'a> Scope for VersionResolver<'a> {
     fn push(&mut self) {
-        self.scope_stack.push(Box::new(SdkVersionOut::new(
+        self.scope_stack.push(SdkVersionOut::new(
             self.version_file.default_version.unwrap_or(1),
-        )));
+        ));
         self.variable_scope.push();
     }
     fn pop(&mut self) {
@@ -233,8 +233,8 @@ impl<'a> Scope for VersionResolver<'a> {
                         .min_sdk_version
                         .max(curr_scope_data.min_sdk_version);
                     let merged = SdkVersionOut::sdk_version_intersection(
-                        *prev_scope_data.clone(),
-                        *curr_scope_data.clone(),
+                        prev_scope_data.clone(),
+                        curr_scope_data.clone(),
                     );
                     self.update_last_scope_data(merged);
                 }
