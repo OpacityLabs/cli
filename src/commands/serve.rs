@@ -277,6 +277,51 @@ async fn health() -> &'static str {
     "healthy"
 }
 
+#[derive(Deserialize)]
+struct VerifyQuery {
+    #[serde(rename = "sessionActionId")]
+    session_action_id: Option<String>,
+}
+
+async fn verify(headers: axum::http::HeaderMap, Query(query): Query<VerifyQuery>) -> Response {
+    info!("Verifying request with headers: {:?}", headers);
+    let auth_header = headers
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok());
+    info!("Auth header: {:?}", auth_header);
+    let auth_provider = headers
+        .get("authorization-provider")
+        .and_then(|v| v.to_str().ok());
+    info!("Auth provider: {:?}", auth_provider);
+
+    // Check if required headers are present
+    if auth_header.is_none() || auth_provider.is_none() {
+        info!("Missing required headers");
+        return (
+            axum::http::StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "error": "Missing required headers" })),
+        )
+            .into_response();
+    }
+
+    // Check if sessionActionId is present
+    if let None = query.session_action_id {
+        info!("Missing sessionActionId");
+        return (
+            axum::http::StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "error": "Missing sessionActionId" })),
+        )
+            .into_response();
+    }
+
+    // we don't really care about the session_action_id, as it's not there
+    (
+        axum::http::StatusCode::OK,
+        Json(serde_json::json!({ "success": true, "message": "API key validated" })),
+    )
+        .into_response()
+}
+
 async fn sessions() -> Json<SessionResponse> {
     Json(SessionResponse {
         id: Uuid::new_v4().to_string(),
@@ -508,6 +553,7 @@ pub async fn serve(
         .route("/sessions", post(sessions))
         .route("/resolve_mapper_alias", get(resolve_mapper_alias)) // this returns { mapper_hash: String, mapper_url: String }
         .route("/resolve_mapper_file", get(resolve_mapper_file)) // this returns the file content
+        .route("/verify", get(verify))
         .layer(middleware);
 
     info!(
