@@ -18,7 +18,7 @@ pub mod sdk_version;
 mod utils;
 pub mod version_visitor;
 
-pub fn compute_version_for_flows<'a>(
+pub fn compute_version_for_flows(
     resources: &Resources,
     flow_paths: Vec<PathBuf>,
     version_file: VersionFile,
