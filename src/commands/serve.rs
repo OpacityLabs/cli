@@ -331,6 +331,7 @@ async fn sessions() -> Json<SessionResponse> {
 }
 
 static SHOULD_REBUNDLE: OnceLock<bool> = OnceLock::new();
+static SERVE_PORT: OnceLock<u16> = OnceLock::new();
 
 static HASH_TO_MAPPER: LazyLock<RwLock<HashMap<String, String>>> =
     LazyLock::new(|| RwLock::new(HashMap::new()));
@@ -339,10 +340,11 @@ async fn resolve_mapper_alias(
     headers: axum::http::HeaderMap,
     Query(query): Query<ResolveMapperAliasQuery>,
 ) -> Response {
+    let default_host = format!("localhost:{}", SERVE_PORT.get().copied().unwrap_or(8080));
     let host = headers
         .get(axum::http::header::HOST)
         .and_then(|v| v.to_str().ok())
-        .unwrap_or("localhost:8080");
+        .unwrap_or(&default_host);
 
     match MAPPERS_CONFIG.get() {
         None => (
@@ -488,10 +490,12 @@ fn initialize_mappers_folder_config_and_hashmaps(
 pub async fn serve(
     config_path: &str,
     should_rebundle: bool,
+    port: u16,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // initialize everything
     get_alias_to_flow_map_and_platform_index(&Config::from_file(config_path).unwrap());
     SHOULD_REBUNDLE.get_or_init(|| should_rebundle);
+    SERVE_PORT.get_or_init(|| port);
 
     match initialize_mappers_folder_config_and_hashmaps("./mappers.location") {
         Ok(_) => {
@@ -514,7 +518,6 @@ pub async fn serve(
         },
     }
 
-    let port = 8080;
     let addr = SocketAddr::from(([0, 0, 0, 0], port));
 
     let middleware = ServiceBuilder::new().layer(
