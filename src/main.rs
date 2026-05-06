@@ -48,6 +48,10 @@ enum Commands {
         /// Rebundle only the requested flow, if rebundle is enabled
         #[arg(short, long)]
         rebundle: bool,
+
+        /// Port to serve on
+        #[arg(short, long, default_value_t = 8080)]
+        port: u16,
     },
 
     /// Compute versions for all flows
@@ -61,7 +65,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         Commands::Bundle => bundle(&cli.config, false)?,
         Commands::Analyze => analyze(&cli.config)?,
         Commands::GenerateCompletions { shell } => generate_completions(shell)?,
-        Commands::Serve { rebundle } => serve(&cli.config, *rebundle).await?,
+        Commands::Serve { rebundle, port } => serve(&cli.config, *rebundle, *port).await?,
         Commands::ComputeVersions => compute_versions(&cli.config)?,
     }
     Ok(())
