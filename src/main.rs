@@ -31,7 +31,12 @@ struct Cli {
 #[derive(Subcommand)]
 enum Commands {
     /// Bundle all Luau files
-    Bundle,
+    Bundle {
+        /// The file to bundle, if empty, bundle all files
+        // #[command(name = "file")]
+        #[arg(name = "file", long, short)]
+        file_to_bundle: Option<String>,
+    },
 
     /// Analyze all Luau files
     Analyze,
@@ -62,7 +67,7 @@ enum Commands {
 async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
     match &cli.command {
-        Commands::Bundle => bundle(&cli.config, false)?,
+        Commands::Bundle { file_to_bundle } => bundle(&cli.config, false, file_to_bundle.as_deref())?,
         Commands::Analyze => analyze(&cli.config)?,
         Commands::GenerateCompletions { shell } => generate_completions(shell)?,
         Commands::Serve { rebundle, port } => serve(&cli.config, *rebundle, *port).await?,

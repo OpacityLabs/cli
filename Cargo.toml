@@ -27,3 +27,6 @@ notify = "6.1.1"
 sha2 = "0.10.9"
 petgraph = "0.8.3"
 bstr = "1.12.1"
+
+[dev-dependencies]
+tempfile = "3"
