@@ -4,7 +4,6 @@ mod commands {
     pub mod bundle;
     pub mod generate_completions;
     pub mod serve;
-    pub mod version;
 }
 
 use commands::analyze::analyze;
@@ -15,8 +14,6 @@ use commands::serve::serve;
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 use tracing::Level;
-
-use crate::commands::version::compute_versions;
 
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
@@ -53,10 +50,6 @@ enum Commands {
         #[arg(short, long, default_value_t = 8080)]
         port: u16,
     },
-
-    /// Compute versions for all flows
-    #[command(name = "compute-versions")]
-    ComputeVersions,
 }
 
 async fn run() -> Result<(), Box<dyn std::error::Error>> {
@@ -66,7 +59,6 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         Commands::Analyze => analyze(&cli.config)?,
         Commands::GenerateCompletions { shell } => generate_completions(shell)?,
         Commands::Serve { rebundle, port } => serve(&cli.config, *rebundle, *port).await?,
-        Commands::ComputeVersions => compute_versions(&cli.config)?,
     }
     Ok(())
 }
