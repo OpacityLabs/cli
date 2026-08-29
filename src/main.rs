@@ -28,7 +28,10 @@ struct Cli {
 #[derive(Subcommand)]
 enum Commands {
     /// Bundle all Luau files
-    Bundle,
+    Bundle {
+        /// Bundle only this flow (matched by alias); bundles every flow when omitted
+        flow_name: Option<String>,
+    },
 
     /// Analyze all Luau files
     Analyze,
@@ -55,7 +58,7 @@ enum Commands {
 async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
     match &cli.command {
-        Commands::Bundle => bundle(&cli.config, false)?,
+        Commands::Bundle { flow_name } => bundle(&cli.config, false, flow_name.as_deref())?,
         Commands::Analyze => analyze(&cli.config)?,
         Commands::GenerateCompletions { shell } => generate_completions(shell)?,
         Commands::Serve { rebundle, port } => serve(&cli.config, *rebundle, *port).await?,

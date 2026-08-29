@@ -9,7 +9,7 @@ use darklua_core::{
 };
 use std::path::PathBuf;
 use std::time::Instant;
-use tracing::info;
+use tracing::{info, warn};
 
 fn get_global_inject_rules(platform: &SimplePlatform, flow: &Flow) -> Vec<Box<dyn Rule>> {
     let mut rules: Vec<Box<dyn Rule>> = vec![
@@ -109,30 +109,12 @@ pub fn create_options(
     })
 }
 
-pub fn bundle(config_path: &str, is_rebundle: bool) -> Result<()> {
-    let config = config::Config::from_file(config_path)?;
-    let resources = Resources::from_file_system();
+fn flow_matches(flow: &Flow, flow_name: &str) -> bool {
+    flow.alias == flow_name
+}
 
-    std::fs::create_dir_all(&config.settings.output_directory)?;
-
-    let mut file_paths: Vec<PathBuf> = Vec::new();
-
-    for platform in &config.platforms {
-        println!("Processing platform: {}", platform.name);
-        let simple_platform = SimplePlatform::from(platform);
-
-        for flow in &platform.flows {
-            println!("Bundling {} ({})", flow.name, flow.alias);
-
-            let bundle_options = create_options(&config, &simple_platform, flow)?;
-
-            file_paths.push(bundle_options.output.clone());
-
-            process_bundle(&resources, bundle_options.opts)?;
-        }
-    }
-
-    let hashes = compute_hashes(&mut file_paths)?;
+fn write_hashes_lock(config_path: &str, file_paths: &mut Vec<PathBuf>) -> Result<()> {
+    let hashes = compute_hashes(file_paths)?;
 
     let mut config_path_dir_buf = PathBuf::from(config_path);
     config_path_dir_buf.pop();
@@ -145,10 +127,75 @@ pub fn bundle(config_path: &str, is_rebundle: bool) -> Result<()> {
             .join("\n"),
     )?;
 
-    if is_rebundle {
-        info!("Rebundled all flows successfully");
-    } else {
-        info!("Bundled all flows successfully");
+    Ok(())
+}
+
+/// Bundles every flow in the config, or only the one matching `flow_name` (by alias).
+///
+/// `hashes.lock` is only written on a full bundle: a single-flow run would otherwise leave
+/// a manifest that no longer describes the rest of the output directory.
+pub fn bundle(config_path: &str, is_rebundle: bool, flow_name: Option<&str>) -> Result<()> {
+    let config = config::Config::from_file(config_path)?;
+    let resources = Resources::from_file_system();
+
+    std::fs::create_dir_all(&config.settings.output_directory)?;
+
+    let mut file_paths: Vec<PathBuf> = Vec::new();
+
+    for platform in &config.platforms {
+        let flows: Vec<&Flow> = platform
+            .flows
+            .iter()
+            .filter(|flow| flow_name.is_none_or(|name| flow_matches(flow, name)))
+            .collect();
+
+        if flows.is_empty() {
+            continue;
+        }
+
+        println!("Processing platform: {}", platform.name);
+        let simple_platform = SimplePlatform::from(platform);
+
+        for flow in flows {
+            println!("Bundling {} ({})", flow.name, flow.alias);
+
+            let bundle_options = create_options(&config, &simple_platform, flow)?;
+
+            file_paths.push(bundle_options.output.clone());
+
+            process_bundle(&resources, bundle_options.opts)?;
+        }
+    }
+
+    match flow_name {
+        Some(name) => {
+            if file_paths.is_empty() {
+                anyhow::bail!(
+                    "No flow named '{}' in {}. Available flows (alias): {}",
+                    name,
+                    config_path,
+                    config
+                        .platforms
+                        .iter()
+                        .flat_map(|platform| platform.flows.iter())
+                        .map(|flow| flow.alias.clone())
+                        .collect::<Vec<String>>()
+                        .join(", ")
+                );
+            }
+
+            info!("Bundled flow '{}' successfully", name);
+            warn!("The `hashes.lock` file won't be updated since only one flow was bundled!");
+        }
+        None => {
+            write_hashes_lock(config_path, &mut file_paths)?;
+
+            if is_rebundle {
+                info!("Rebundled all flows successfully");
+            } else {
+                info!("Bundled all flows successfully");
+            }
+        }
     }
 
     Ok(())
