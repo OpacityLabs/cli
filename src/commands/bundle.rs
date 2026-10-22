@@ -3,16 +3,64 @@ use crate::config::{self, SimplePlatform};
 
 use anyhow::Result;
 use darklua_core::rules::bundle::BundleRequireMode;
-use darklua_core::rules::{InjectGlobalValue, Rule};
+use darklua_core::rules::{InjectGlobalValue, RemoveComments, Rule};
 use darklua_core::{
     process, BundleConfiguration, Configuration, GeneratorParameters, Options, Resources,
+    WorkerTree,
 };
-use std::path::PathBuf;
+use serde::Serialize;
+use std::path::{Path, PathBuf};
 use std::time::Instant;
 use tracing::info;
 
+const SOURCE_MAP_PREFIX: &str = "--@opacity-sourcemap ";
+
+#[derive(Serialize)]
+struct SourceMapFile {
+    path: String,
+    start: usize,
+    end: usize,
+}
+
+fn relative_path(path: &Path, cwd: &Path) -> String {
+    let relative = if path.is_absolute() {
+        path.strip_prefix(cwd)
+            .ok()
+            .or_else(|| path.file_name().map(Path::new))
+    } else {
+        Some(path)
+    };
+    relative
+        .map(|path| {
+            path.to_string_lossy()
+                .replace('\\', "/")
+                .trim_start_matches("./")
+                .to_string()
+        })
+        .unwrap_or_default()
+}
+
+fn source_map_line(tree: &WorkerTree, bundle_line_count: usize) -> Result<String> {
+    let cwd = std::env::current_dir()?;
+    let mut files: Vec<SourceMapFile> = tree
+        .iter_bundle_source_ranges()
+        .flat_map(|(_, ranges)| ranges)
+        .map(|range| SourceMapFile {
+            path: relative_path(&range.path, &cwd),
+            start: range.start_line,
+            end: range.end_line.min(bundle_line_count),
+        })
+        .collect();
+    files.sort_by_key(|file| file.start);
+    Ok(format!(
+        "{SOURCE_MAP_PREFIX}{}\n",
+        serde_json::to_string(&files)?
+    ))
+}
+
 fn get_global_inject_rules(platform: &SimplePlatform, flow: &Flow) -> Vec<Box<dyn Rule>> {
     let mut rules: Vec<Box<dyn Rule>> = vec![
+        Box::new(RemoveComments::default()),
         Box::new(InjectGlobalValue::string("FLOW_NAME", flow.name.clone())),
         Box::new(InjectGlobalValue::string("FLOW_ALIAS", flow.alias.clone())),
         Box::new(InjectGlobalValue::string(
@@ -42,20 +90,24 @@ fn get_global_inject_rules(platform: &SimplePlatform, flow: &Flow) -> Vec<Box<dy
     rules
 }
 
-pub fn process_bundle(resources: &Resources, options: Options) -> Result<()> {
+pub fn process_bundle(resources: &Resources, bundle_options: BundleOptions) -> Result<()> {
     let process_start = Instant::now();
-    let result =
-        process(resources, options).map_err(|e| anyhow::anyhow!("Processing failed: {:?}", e))?;
-
-    match result.result() {
-        Ok(_) => {
-            println!("Successfully processed in {:?}", process_start.elapsed());
-            Ok(())
-        }
-        Err(err) => {
-            anyhow::bail!("Failed to process: {:?}", err);
-        }
+    let result = process(resources, bundle_options.opts)
+        .map_err(|e| anyhow::anyhow!("Processing failed: {:?}", e))?;
+    if let Some(err) = result.collect_errors().first() {
+        anyhow::bail!("Failed to process: {:?}", err);
     }
+
+    let mut bundle = std::fs::read_to_string(&bundle_options.output)?;
+    if !bundle.ends_with('\n') {
+        bundle.push('\n');
+    }
+    let source_map = source_map_line(&result, bundle.lines().count())?;
+    bundle.push_str(&source_map);
+    std::fs::write(&bundle_options.output, bundle)?;
+
+    println!("Successfully processed in {:?}", process_start.elapsed());
+    Ok(())
 }
 
 fn compute_hashes(file_paths: &mut Vec<PathBuf>) -> Result<Vec<(String, String)>> {
@@ -103,7 +155,7 @@ pub fn create_options(
     Ok(BundleOptions {
         opts: Options::new(&input)
             .with_output(&output)
-            .with_generator_override(GeneratorParameters::Dense { column_span: 80 })
+            .with_generator_override(GeneratorParameters::RetainLines)
             .with_configuration(config),
         output: output.clone(),
     })
@@ -128,7 +180,7 @@ pub fn bundle(config_path: &str, is_rebundle: bool) -> Result<()> {
 
             file_paths.push(bundle_options.output.clone());
 
-            process_bundle(&resources, bundle_options.opts)?;
+            process_bundle(&resources, bundle_options)?;
         }
     }
 
