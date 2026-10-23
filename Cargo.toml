@@ -11,7 +11,7 @@ clap = { version = "4.5.1", features = ["derive", "cargo"] }
 serde = { version = "1.0", features = ["derive"] }
 toml = "0.8.20"
 which = "7.0.2"
-darklua = { version = "0.17.4", git = "https://github.com/HarveyAtOpacity/darklua", rev = "25fde02d5bb30970cf6dae7379f1d24467b7c95f" }
+darklua = { version = "0.17.5", git = "https://github.com/HarveyAtOpacity/darklua", rev = "b95e0faa6f165c96c7ab6aed3ea72620bb4e9b72" }
 clap_complete = "4.5.46"
 axum = "0.8.3"
 tower-http = { version = "0.6.2", features = ["trace"] }
