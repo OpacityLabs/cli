@@ -8,14 +8,14 @@ use darklua_core::{
     process, BundleConfiguration, Configuration, GeneratorParameters, Options, Resources,
     WorkerTree,
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 use tracing::info;
 
 const SOURCE_MAP_PREFIX: &str = "--@opacity-sourcemap ";
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize, Debug, PartialEq, Eq)]
 struct SourceMapFile {
     path: String,
     start: usize,
@@ -23,34 +23,33 @@ struct SourceMapFile {
 }
 
 fn relative_path(path: &Path, cwd: &Path) -> String {
-    let relative = if path.is_absolute() {
-        path.strip_prefix(cwd)
-            .ok()
-            .or_else(|| path.file_name().map(Path::new))
-    } else {
-        Some(path)
-    };
-    relative
-        .map(|path| {
-            path.to_string_lossy()
-                .replace('\\', "/")
-                .trim_start_matches("./")
-                .to_string()
-        })
-        .unwrap_or_default()
+    path.strip_prefix(cwd)
+        .unwrap_or(path)
+        .to_string_lossy()
+        .replace('\\', "/")
+        .trim_start_matches("./")
+        .to_string()
 }
 
-fn source_map_line(tree: &WorkerTree, bundle_line_count: usize) -> Result<String> {
-    let cwd = std::env::current_dir()?;
-    let mut files: Vec<SourceMapFile> = tree
+fn source_map_line(tree: &WorkerTree, resources: &Resources, cwd: &Path) -> Result<String> {
+    let mut files = Vec::new();
+    for range in tree
         .iter_bundle_source_ranges()
         .flat_map(|(_, ranges)| ranges)
-        .map(|range| SourceMapFile {
-            path: relative_path(&range.path, &cwd),
+    {
+        let source_lines = resources
+            .get(&range.path)
+            .map_err(|e| anyhow::anyhow!("Failed to read {}: {:?}", range.path.display(), e))?
+            .lines()
+            .count();
+        files.push(SourceMapFile {
+            path: relative_path(&range.path, cwd),
             start: range.start_line,
-            end: range.end_line.min(bundle_line_count),
-        })
-        .collect();
+            end: range
+                .end_line
+                .min(range.start_line + source_lines.saturating_sub(1)),
+        });
+    }
     files.sort_by_key(|file| file.start);
     Ok(format!(
         "{SOURCE_MAP_PREFIX}{}\n",
@@ -102,7 +101,7 @@ pub fn process_bundle(resources: &Resources, bundle_options: BundleOptions) -> R
     if !bundle.ends_with('\n') {
         bundle.push('\n');
     }
-    let source_map = source_map_line(&result, bundle.lines().count())?;
+    let source_map = source_map_line(&result, resources, &std::env::current_dir()?)?;
     bundle.push_str(&source_map);
     std::fs::write(&bundle_options.output, bundle)?;
 
@@ -204,4 +203,146 @@ pub fn bundle(config_path: &str, is_rebundle: bool) -> Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::{Config, Platform, Settings};
+
+    #[test]
+    fn relative_path_strips_cwd() {
+        let cwd = Path::new("/work/flows");
+        assert_eq!(
+            relative_path(Path::new("/work/flows/src/a.luau"), cwd),
+            "src/a.luau"
+        );
+    }
+
+    #[test]
+    fn relative_path_keeps_paths_outside_cwd() {
+        let cwd = Path::new("/work/flows");
+        assert_eq!(
+            relative_path(Path::new("/other/src/init.luau"), cwd),
+            "/other/src/init.luau"
+        );
+    }
+
+    #[test]
+    fn relative_path_strips_dot_slash() {
+        let cwd = Path::new("/work/flows");
+        assert_eq!(relative_path(Path::new("./src/a.luau"), cwd), "src/a.luau");
+    }
+
+    #[test]
+    fn relative_path_uses_forward_slashes() {
+        let cwd = Path::new("/work/flows");
+        assert_eq!(
+            relative_path(Path::new("src\\sub\\a.luau"), cwd),
+            "src/sub/a.luau"
+        );
+    }
+
+    const ENTRY: &str = "local dep = require(\"./dep\")
+-- a comment that the bundle drops
+local function main()
+	return dep.value() .. \"entry_line4\"
+end
+return main
+";
+
+    const DEP: &str = "local M = {}
+-- another dropped comment
+function M.value()
+	return \"dep_line4\"
+end
+return M
+";
+
+    fn bundle_fixture() -> (String, Vec<SourceMapFile>, PathBuf) {
+        let root = std::env::temp_dir().join(format!("opacity-cli-{}", uuid::Uuid::new_v4()));
+        let src = root.join("src");
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::write(src.join("entry.luau"), ENTRY).unwrap();
+        std::fs::write(src.join("dep.luau"), DEP).unwrap();
+
+        let flow = Flow {
+            name: "Fixture".into(),
+            alias: "fixture".into(),
+            description: String::new(),
+            min_sdk_version: None,
+            retrieves: None,
+            path: src.join("entry.luau").to_string_lossy().into_owned(),
+        };
+        let platform = Platform {
+            name: "fixture".into(),
+            description: String::new(),
+            flows: vec![flow.clone()],
+        };
+        let config = Config {
+            settings: Settings {
+                output_directory: root.join("out").to_string_lossy().into_owned(),
+                definition_files: None,
+            },
+            platforms: vec![platform],
+        };
+        let simple_platform = SimplePlatform::from(&config.platforms[0]);
+
+        let options = create_options(&config, &simple_platform, &flow).unwrap();
+        let output = options.output.clone();
+        let resources = Resources::from_file_system();
+        let result = process(&resources, options.opts).unwrap();
+        assert!(result.collect_errors().is_empty());
+        let bundle = std::fs::read_to_string(&output).unwrap();
+        let source_map = source_map_line(&result, &resources, &root).unwrap();
+        std::fs::remove_dir_all(&root).unwrap();
+
+        let map_json = source_map
+            .trim_end()
+            .strip_prefix(SOURCE_MAP_PREFIX)
+            .expect("source map line must start with the prefix");
+        let files: Vec<SourceMapFile> = serde_json::from_str(map_json).unwrap();
+        (bundle, files, root)
+    }
+
+    #[test]
+    fn source_map_points_every_source_line_at_its_bundle_line() {
+        let (bundle, files, _) = bundle_fixture();
+        let bundle_lines: Vec<&str> = bundle.lines().collect();
+        let sources = [("src/dep.luau", DEP), ("src/entry.luau", ENTRY)];
+
+        assert_eq!(
+            files
+                .iter()
+                .map(|file| file.path.as_str())
+                .collect::<Vec<_>>(),
+            sources.iter().map(|(path, _)| *path).collect::<Vec<_>>()
+        );
+
+        for (file, (_, source)) in files.iter().zip(sources) {
+            let source_lines: Vec<&str> = source.lines().collect();
+            assert_eq!(file.end, file.start + source_lines.len() - 1, "{file:?}");
+
+            for (index, line) in source_lines.iter().enumerate() {
+                let actual = bundle_lines[file.start + index - 1];
+                if line.contains("_line") {
+                    assert!(
+                        actual.contains(line.trim()),
+                        "{file:?} line {index}: {actual}"
+                    );
+                }
+                if line.starts_with("--") {
+                    assert!(!actual.contains("--"), "{file:?} line {index}: {actual}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn source_map_ranges_do_not_overlap() {
+        let (_, files, _) = bundle_fixture();
+        for pair in files.windows(2) {
+            assert!(pair[0].end < pair[1].start, "{pair:?}");
+        }
+    }
 }
