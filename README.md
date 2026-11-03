@@ -37,6 +37,23 @@ opacity-cli analyze --config config.toml
 opacity-cli serve --rebundle
 ```
 
+### Source map
+
+Every bundle ends with one comment line that tells the SDK which source file each bundle line came from:
+
+```lua
+--@opacity-sourcemap [{"path":"src/amazon/auth.luau","start":12,"end":26},{"path":"src/amazon/flows/overview.luau","start":27,"end":40}]
+```
+
+- `start` and `end` are bundle line numbers, 1-based and inclusive.
+- `end` is the bundle line that holds the last line of the file.
+- `path` is relative to the directory the CLI runs in, uses `/` separators, and has no `./` prefix. A file outside that directory keeps its full path.
+- Entries are sorted by `start` and do not overlap.
+- Bundle lines before the first entry hold generated code (hoisted types and the module table) and belong to no file.
+- The bundle keeps every source line on the same line number inside its range. Comments are removed and leave a blank line.
+
+The SDK resolves a frame on bundle line `n` to `path` line `n - start + 1`.
+
 ### Analysis Features
 
 The analyze command uses luau-lsp to provide:

@@ -133,7 +133,7 @@ async fn rebundle_and_read_flow(name: &str) -> Result<FlowResponse, String> {
         let bundle_options =
             create_options(&config, flow_platform, matched_flow).map_err(|e| e.to_string())?;
 
-        process_bundle(&Resources::from_file_system(), bundle_options.opts)
+        process_bundle(&Resources::from_file_system(), bundle_options)
             .map_err(|e| e.to_string())?;
     }
 
