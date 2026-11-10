@@ -4,7 +4,7 @@ use crate::{
 };
 
 use axum::{
-    extract::Query,
+    extract::{Path, Query},
     response::{IntoResponse, Response},
     routing::{get, post},
     Json, Router,
@@ -22,7 +22,7 @@ use std::{
 };
 use tower::ServiceBuilder;
 use tower_http::trace::{self, TraceLayer};
-use tracing::{info, Level};
+use tracing::{error, info, Level};
 use uuid::Uuid;
 
 use anyhow::{Context, Result};
@@ -52,7 +52,6 @@ struct ResolveMapperFileQuery {
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum LuaScriptOwnerType {
-    Custom,
     Opacity,
 }
 
@@ -65,6 +64,38 @@ struct FlowResponse {
     session_id: String,
     session_action_id: String,
     owner_type: LuaScriptOwnerType,
+    allowed_hosts: Option<Vec<String>>,
+    mapper_hash: Option<String>,
+    mapper_url: Option<String>,
+}
+
+impl FlowResponse {
+    fn new(flow: &Flow, script: String) -> Result<Self, String> {
+        let (mapper_hash, mapper_url) = flow_mapper(&flow.alias)?
+            .map(|mapper| (mapper.hash, mapper.url))
+            .unzip();
+
+        Ok(Self {
+            name: flow.alias.clone(),
+            min_sdk: match &flow.min_sdk_version {
+                None => {
+                    info!(
+                        "No min SDK version found for flow {}; Defaulting to '1'",
+                        flow.alias
+                    );
+                    "1".to_string()
+                }
+                Some(min_sdk) => min_sdk.clone(),
+            },
+            script,
+            session_id: "dummy".to_string(),
+            session_action_id: session_action_id_for(&flow.alias),
+            owner_type: LuaScriptOwnerType::Opacity,
+            allowed_hosts: flow.allowed_hosts.clone(),
+            mapper_hash,
+            mapper_url,
+        })
+    }
 }
 
 #[derive(Serialize)]
@@ -83,7 +114,7 @@ struct SessionResponse {
 }
 
 async fn read_flow(name: &str) -> Result<FlowResponse, String> {
-    let config = crate::config::Config::from_file("./opacity.toml").unwrap();
+    let config = flows_config()?;
 
     let matched_flow = config
         .platforms
@@ -97,31 +128,11 @@ async fn read_flow(name: &str) -> Result<FlowResponse, String> {
     let script_content =
         fs::read_to_string(script_path).map_err(|_| String::from("Script file not found"))?;
 
-    Ok(FlowResponse {
-        name: matched_flow.alias.clone(),
-        min_sdk: match &matched_flow.min_sdk_version {
-            None => {
-                info!(
-                    "No min SDK version found for flow {}; Defaulting to '1'",
-                    name
-                );
-                "1".to_string()
-            }
-            Some(min_sdk) => min_sdk.clone(),
-        },
-        script: script_content,
-        session_id: "dummy".to_string(),
-        session_action_id: "dummy-action-id".to_string(),
-        // the Custom type makes it so NO errors are sent to sentry
-        // WARNING! As this is also used by our clients that write
-        // their own scripts, we won't be able to see errors in
-        // sentry, even if they compile in release mode
-        owner_type: LuaScriptOwnerType::Custom,
-    })
+    FlowResponse::new(matched_flow, script_content)
 }
 
 async fn rebundle_and_read_flow(name: &str) -> Result<FlowResponse, String> {
-    let config = crate::config::Config::from_file("./opacity.toml").unwrap();
+    let config = flows_config()?;
 
     let (matched_flow, platform_index) = ALIAS_TO_FLOW_MAP_AND_PLATFORM_INDEX
         .get()
@@ -144,27 +155,7 @@ async fn rebundle_and_read_flow(name: &str) -> Result<FlowResponse, String> {
     let script_content =
         fs::read_to_string(script_path).map_err(|_| String::from("Script file not found"))?;
 
-    Ok(FlowResponse {
-        name: matched_flow.alias.clone(),
-        min_sdk: match &matched_flow.min_sdk_version {
-            None => {
-                info!(
-                    "No min SDK version found for flow {}; Defaulting to '1'",
-                    name
-                );
-                "1".to_string()
-            }
-            Some(min_sdk) => min_sdk.clone(),
-        },
-        script: script_content,
-        session_id: "dummy".to_string(),
-        session_action_id: "dummy-action-id".to_string(),
-        // the Custom type makes it so NO errors are sent to sentry
-        // WARNING! As this is also used by our clients that write
-        // their own scripts, we won't be able to see errors in
-        // sentry, even if they compile in release mode
-        owner_type: LuaScriptOwnerType::Custom,
-    })
+    FlowResponse::new(matched_flow, script_content)
 }
 
 async fn flows(Query(query): Query<FlowQuery>) -> Response {
@@ -176,10 +167,13 @@ async fn flows(Query(query): Query<FlowQuery>) -> Response {
                 "Script file not found" => {
                     (axum::http::StatusCode::NOT_FOUND, "Script file not found")
                 }
-                _ => (
-                    axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-                    "Error processing flow request",
-                ),
+                _ => {
+                    error!("Could not serve flow {}: {e}", query.name);
+                    (
+                        axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                        "Error processing flow request",
+                    )
+                }
             };
             (status, Json(serde_json::json!({ "error": message }))).into_response()
         }
@@ -264,10 +258,13 @@ async fn flowsv3_v2(Query(query): Query<FlowQueryV3>) -> Response {
                 "Script file not found" => {
                     (axum::http::StatusCode::NOT_FOUND, "Script file not found")
                 }
-                _ => (
-                    axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-                    "Error processing flow request",
-                ),
+                _ => {
+                    error!("Could not serve flow {}: {e}", query.alias);
+                    (
+                        axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                        "Error processing flow request",
+                    )
+                }
             };
             (status, Json(serde_json::json!({ "error": message }))).into_response()
         }
@@ -305,22 +302,74 @@ async fn verify(headers: axum::http::HeaderMap, Query(query): Query<VerifyQuery>
             .into_response();
     }
 
-    // Check if sessionActionId is present
-    if query.session_action_id.is_none() {
+    let Some(session_action_id) = query.session_action_id else {
         info!("Missing sessionActionId");
         return (
             axum::http::StatusCode::BAD_REQUEST,
             Json(serde_json::json!({ "error": "Missing sessionActionId" })),
         )
             .into_response();
-    }
+    };
 
-    // we don't really care about the session_action_id, as it's not there
-    (
-        axum::http::StatusCode::OK,
-        Json(serde_json::json!({ "success": true, "message": "API key validated" })),
-    )
-        .into_response()
+    verified_flow(&session_action_id)
+}
+
+/// `/v3/flows` mints session action ids that name the flow, so `/verify` can
+/// tell the notary which flow a session action belongs to.
+const FLOW_SESSION_ACTION_PREFIX: &str = "flow:";
+
+fn session_action_id_for(alias: &str) -> String {
+    format!("{FLOW_SESSION_ACTION_PREFIX}{alias}")
+}
+
+/// The flow of a session action, as the notary reads it from `/verify`
+#[derive(Serialize)]
+struct VerifyFlow {
+    alias: String,
+    mapper_hash: Option<String>,
+    mapper_url: Option<String>,
+    allowed_hosts: Option<Vec<String>>,
+}
+
+/// The notary refuses a proof unless `/verify` names the flow of its session
+/// action. It then applies that flow's mapper and allowed hosts.
+fn verified_flow(session_action_id: &str) -> Response {
+    let flow = session_action_id
+        .strip_prefix(FLOW_SESSION_ACTION_PREFIX)
+        .and_then(|alias| ALIAS_TO_FLOW_MAP_AND_PLATFORM_INDEX.get()?.get(alias));
+    let Some((flow, _)) = flow else {
+        info!("Unknown session action: {session_action_id}");
+        return (
+            axum::http::StatusCode::NOT_FOUND,
+            Json(serde_json::json!({ "error": "Session action not found" })),
+        )
+            .into_response();
+    };
+
+    match flow_mapper(&flow.alias) {
+        Ok(mapper) => {
+            let (mapper_hash, mapper_url) = mapper.map(|mapper| (mapper.hash, mapper.url)).unzip();
+            Json(serde_json::json!({
+                "success": true,
+                "message": "API key validated",
+                "flow": VerifyFlow {
+                    alias: flow.alias.clone(),
+                    mapper_hash,
+                    mapper_url,
+                    allowed_hosts: flow.allowed_hosts.clone(),
+                },
+            }))
+            .into_response()
+        }
+        Err(e) => {
+            error!("{e}");
+            (
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({ "error": e })),
+            )
+                .into_response()
+        }
+    }
 }
 
 async fn sessions() -> Json<SessionResponse> {
@@ -331,11 +380,69 @@ async fn sessions() -> Json<SessionResponse> {
     })
 }
 
+static CONFIG_PATH: OnceLock<String> = OnceLock::new();
 static SHOULD_REBUNDLE: OnceLock<bool> = OnceLock::new();
 static SERVE_PORT: OnceLock<u16> = OnceLock::new();
 
+fn flows_config() -> Result<Config, String> {
+    let config_path = CONFIG_PATH.get().map_or("./opacity.toml", String::as_str);
+    Config::from_file(config_path).map_err(|e| format!("Could not read {config_path}: {e}"))
+}
+
 static HASH_TO_MAPPER: LazyLock<RwLock<HashMap<String, String>>> =
     LazyLock::new(|| RwLock::new(HashMap::new()));
+
+/// The bundled mapper with this alias, or None when the server serves no
+/// mappers
+fn bundled_mapper_path(alias: &str) -> Option<PathBuf> {
+    let mappers_folder = MAPPERS_FOLDER.get()?;
+    let mappers_config = MAPPERS_CONFIG.get()?;
+    Some(
+        PathBuf::from(mappers_folder)
+            .join(&mappers_config.settings.output_directory)
+            .join(format!("{alias}.bundle.luau")),
+    )
+}
+
+/// Hashes the bundled mapper with this alias and remembers the hash, so the
+/// mapper routes can serve it. None when there is no such mapper.
+fn index_mapper(alias: &str) -> std::io::Result<Option<String>> {
+    let Some(file_path) = bundled_mapper_path(alias) else {
+        return Ok(None);
+    };
+    let file_content = match fs::read_to_string(file_path) {
+        Ok(file_content) => file_content,
+        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error),
+    };
+
+    let sha256 = get_sha256(&file_content);
+    HASH_TO_MAPPER
+        .write()
+        .unwrap()
+        .insert(sha256.clone(), alias.to_owned());
+    Ok(Some(sha256))
+}
+
+struct FlowMapper {
+    hash: String,
+    url: String,
+}
+
+/// The flow's mapper is the bundled mapper with the flow's alias, as the
+/// backend pairs them. The SDK and the notary both sign the URL, so it has a
+/// fixed host rather than the request's: `/v3/flows` and `/verify` must give
+/// the same string.
+fn flow_mapper(alias: &str) -> Result<Option<FlowMapper>, String> {
+    let port = SERVE_PORT.get().copied().unwrap_or(8080);
+    let hash = index_mapper(alias)
+        .map_err(|e| format!("Could not read the mapper of flow {alias}: {e}"))?;
+
+    Ok(hash.map(|hash| FlowMapper {
+        url: format!("http://localhost:{port}/mapper/{hash}"),
+        hash,
+    }))
+}
 
 async fn resolve_mapper_alias(
     headers: axum::http::HeaderMap,
@@ -347,106 +454,42 @@ async fn resolve_mapper_alias(
         .and_then(|v| v.to_str().ok())
         .unwrap_or(&default_host);
 
-    match MAPPERS_CONFIG.get() {
-        None => (
-            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-            "Mappers config not initialized",
-        )
-            .into_response(),
-        Some(mappers_config) => {
-            // we need to check the bundled folder and see if there's a file with the same name as the alias
-            match MAPPERS_FOLDER.get() {
-                None => (
-                    axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-                    "Mappers folder not initialized",
-                )
-                    .into_response(),
-                Some(mappers_folder) => {
-                    let file_path = PathBuf::from(mappers_folder)
-                        .join(mappers_config.settings.output_directory.clone())
-                        .join(format!("{}.bundle.luau", query.alias));
-
-                    match fs::read_to_string(file_path) {
-                        Ok(file_content) => {
-                            let sha256 = get_sha256(&file_content);
-                            HASH_TO_MAPPER
-                                .write()
-                                .unwrap()
-                                .insert(sha256.clone(), query.alias.clone());
-                            Json(MapperResponse {
-                                mapper_hash: sha256.clone(),
-                                mapper_url: format!(
-                                    "http://{}/resolve_mapper_file?hash={}",
-                                    host, sha256
-                                ),
-                            })
-                            .into_response()
-                        }
-                        Err(e) => match e.downcast::<std::io::Error>() {
-                            Ok(io_error) => {
-                                if io_error.kind() == std::io::ErrorKind::NotFound {
-                                    (axum::http::StatusCode::NOT_FOUND, "Mapper not found")
-                                        .into_response()
-                                } else {
-                                    (
-                                        axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-                                        io_error.to_string(),
-                                    )
-                                        .into_response()
-                                }
-                            }
-                            Err(e) => {
-                                (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string())
-                                    .into_response()
-                            }
-                        },
-                    }
-                }
-            }
-        }
+    match index_mapper(&query.alias) {
+        Ok(Some(sha256)) => Json(MapperResponse {
+            mapper_url: format!("http://{host}/resolve_mapper_file?hash={sha256}"),
+            mapper_hash: sha256,
+        })
+        .into_response(),
+        Ok(None) => (axum::http::StatusCode::NOT_FOUND, "Mapper not found").into_response(),
+        Err(e) => (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }
 }
 
 async fn resolve_mapper_file(Query(query): Query<ResolveMapperFileQuery>) -> Response {
-    match HASH_TO_MAPPER.read().unwrap().get(&query.hash) {
-        None => (axum::http::StatusCode::NOT_FOUND, "Mapper not found").into_response(),
-        Some(mapper) => {
-            // now we have to get the actual alias back and return the file content
-            match MAPPERS_FOLDER.get() {
-                None => (
-                    axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-                    "Mappers folder not initialized",
-                )
-                    .into_response(),
-                Some(mappers_folder) => match MAPPERS_CONFIG.get() {
-                    None => (
-                        axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-                        "Mapper config not initialized",
-                    )
-                        .into_response(),
-                    Some(mappers_config) => {
-                        let file_path = PathBuf::from(mappers_folder)
-                            .join(mappers_config.settings.output_directory.clone())
-                            .join(format!("{}.bundle.luau", mapper));
+    mapper_file_response(&query.hash)
+}
 
-                        match fs::read_to_string(file_path) {
-                            Ok(file_content) => {
-                                let rehashed = get_sha256(&file_content);
-                                if rehashed != query.hash {
-                                    (axum::http::StatusCode::NOT_FOUND, "Mapper file content does not match hash, file might've been modified, try resolving the mapper alias again").into_response()
-                                } else {
-                                    (axum::http::StatusCode::OK, file_content).into_response()
-                                }
-                            }
-                            Err(e) => {
-                                (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string())
-                                    .into_response()
-                            }
-                        }
-                    }
-                },
-            }
+/// Serves the mapper URL that `/v3/flows` and `/verify` give for a flow
+async fn mapper_by_hash(Path(hash): Path<String>) -> Response {
+    mapper_file_response(&hash)
+}
+
+fn mapper_file_response(hash: &str) -> Response {
+    let alias = HASH_TO_MAPPER.read().unwrap().get(hash).cloned();
+    let Some(file_path) = alias.as_deref().and_then(bundled_mapper_path) else {
+        return (axum::http::StatusCode::NOT_FOUND, "Mapper not found").into_response();
+    };
+
+    match fs::read_to_string(file_path) {
+        Ok(file_content) if get_sha256(&file_content) == hash => {
+            (axum::http::StatusCode::OK, file_content).into_response()
         }
+        Ok(_) => (
+            axum::http::StatusCode::NOT_FOUND,
+            "Mapper file content does not match hash, file might've been modified, fetch the flow again",
+        )
+            .into_response(),
+        Err(e) => (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }
 }
 
@@ -485,6 +528,19 @@ fn initialize_mappers() -> Result<()> {
     Ok(())
 }
 
+fn routes() -> Router {
+    Router::new()
+        .route("/health", get(health))
+        .route("/v2/flows", get(flows))
+        .route("/v3/flows", get(flowsv3_v2))
+        .route("/sessions", post(sessions))
+        // SDKs up to v6.27.2 resolve a mapper by alias with these two routes
+        .route("/resolve_mapper_alias", get(resolve_mapper_alias)) // this returns { mapper_hash: String, mapper_url: String }
+        .route("/resolve_mapper_file", get(resolve_mapper_file)) // this returns the file content
+        .route("/mapper/{hash}", get(mapper_by_hash)) // the mapper URL of /v3/flows and /verify
+        .route("/verify", get(verify))
+}
+
 pub async fn serve(
     config_path: &str,
     should_rebundle: bool,
@@ -492,6 +548,7 @@ pub async fn serve(
 ) -> Result<(), Box<dyn std::error::Error>> {
     // initialize everything
     get_alias_to_flow_map_and_platform_index(&Config::from_file(config_path).unwrap());
+    CONFIG_PATH.get_or_init(|| config_path.to_owned());
     SHOULD_REBUNDLE.get_or_init(|| should_rebundle);
     SERVE_PORT.get_or_init(|| port);
 
@@ -513,15 +570,7 @@ pub async fn serve(
             ),
     );
 
-    let app = Router::new()
-        .route("/health", get(health))
-        .route("/v2/flows", get(flows))
-        .route("/v3/flows", get(flowsv3_v2))
-        .route("/sessions", post(sessions))
-        .route("/resolve_mapper_alias", get(resolve_mapper_alias)) // this returns { mapper_hash: String, mapper_url: String }
-        .route("/resolve_mapper_file", get(resolve_mapper_file)) // this returns the file content
-        .route("/verify", get(verify))
-        .layer(middleware);
+    let app = routes().layer(middleware);
 
     info!(
         "Listening on port {} (with rebundle {}...)...",
@@ -537,4 +586,158 @@ pub async fn serve(
     axum::serve(listener, app.into_make_service()).await?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::Settings;
+    use axum::{
+        body::{to_bytes, Body},
+        http::{Request, StatusCode},
+    };
+    use serde_json::{json, Value};
+    use tower::ServiceExt;
+
+    const MAPPER: &str = "return function(params)\n  return params.payload\nend\n";
+    /// `shasum -a 256` of `MAPPER`, the hash the notary checks the download against
+    const MAPPER_HASH: &str = "729bac902d2df2f35e9af4a7132cae240eedafdb8303b0869aa81f4360675f9b";
+
+    /// Sets the server up as `serve` does, for a project with one flow that has
+    /// a mapper and allowed hosts, and one flow with neither
+    fn serve_fixture() {
+        static FIXTURE: OnceLock<()> = OnceLock::new();
+        FIXTURE.get_or_init(|| {
+            let root = std::env::temp_dir().join(format!("opacity-cli-{}", Uuid::new_v4()));
+            let bundled = root.join("bundled");
+            let mapping = root.join("mapping");
+            fs::create_dir_all(&bundled).unwrap();
+            fs::create_dir_all(mapping.join("bundled")).unwrap();
+            for alias in ["test:mapped", "test:unmapped"] {
+                fs::write(bundled.join(format!("{alias}.bundle.luau")), "return 1\n").unwrap();
+            }
+            fs::write(mapping.join("bundled/test:mapped.bundle.luau"), MAPPER).unwrap();
+
+            let config_path = root.join("opacity.toml");
+            let config_toml = format!(
+                r#"
+[settings]
+output_directory = "{}"
+
+[[platforms]]
+name = "Test"
+description = "Test platform"
+flows = [
+    {{ name = "Mapped", alias = "test:mapped", description = "", path = "src/mapped.luau", allowed_hosts = ["api.example.com"] }},
+    {{ name = "Unmapped", alias = "test:unmapped", description = "", path = "src/unmapped.luau" }},
+]
+"#,
+                bundled.display()
+            );
+            fs::write(&config_path, config_toml).unwrap();
+            let config_path = config_path.to_string_lossy().into_owned();
+
+            get_alias_to_flow_map_and_platform_index(&Config::from_file(&config_path).unwrap());
+            CONFIG_PATH.get_or_init(|| config_path);
+            SHOULD_REBUNDLE.get_or_init(|| false);
+            SERVE_PORT.get_or_init(|| 8080);
+            MAPPERS_FOLDER.get_or_init(|| mapping.to_string_lossy().into_owned());
+            MAPPERS_CONFIG.get_or_init(|| Config {
+                settings: Settings {
+                    output_directory: "bundled".into(),
+                    definition_files: None,
+                },
+                platforms: vec![],
+            });
+        });
+    }
+
+    /// Sends a GET with the headers the notary sends to `/verify`
+    async fn get(uri: &str) -> (StatusCode, Vec<u8>) {
+        serve_fixture();
+        let request = Request::get(uri)
+            .header("authorization", "Bearer key")
+            .header("authorization-provider", "opacity")
+            .body(Body::empty())
+            .unwrap();
+        let response = routes().oneshot(request).await.unwrap();
+        let status = response.status();
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        (status, body.to_vec())
+    }
+
+    async fn get_json(uri: &str) -> (StatusCode, Value) {
+        let (status, body) = get(uri).await;
+        (status, serde_json::from_slice(&body).unwrap())
+    }
+
+    #[tokio::test]
+    async fn verify_gives_the_notary_the_flow_rules_the_sdk_got() {
+        let (status, flow) = get_json("/v3/flows?alias=test:mapped").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(flow["sessionActionId"], "flow:test:mapped");
+        assert_eq!(flow["mapperHash"], MAPPER_HASH);
+        assert_eq!(
+            flow["mapperUrl"],
+            format!("http://localhost:8080/mapper/{MAPPER_HASH}")
+        );
+        assert_eq!(flow["allowedHosts"], json!(["api.example.com"]));
+
+        let (status, verified) = get_json("/verify?sessionActionId=flow:test:mapped").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(
+            verified["flow"],
+            json!({
+                "alias": "test:mapped",
+                "mapper_hash": flow["mapperHash"],
+                "mapper_url": flow["mapperUrl"],
+                "allowed_hosts": flow["allowedHosts"],
+            })
+        );
+    }
+
+    #[tokio::test]
+    async fn the_mapper_url_serves_the_bundled_mapper() {
+        let (_, verified) = get_json("/verify?sessionActionId=flow:test:mapped").await;
+        let mapper_path = verified["flow"]["mapper_url"]
+            .as_str()
+            .unwrap()
+            .strip_prefix("http://localhost:8080")
+            .unwrap()
+            .to_owned();
+
+        let (status, body) = get(&mapper_path).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body, MAPPER.as_bytes());
+    }
+
+    #[tokio::test]
+    async fn a_flow_without_mapper_or_hosts_names_neither() {
+        let (status, flow) = get_json("/v3/flows?alias=test:unmapped").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(flow["sessionActionId"], "flow:test:unmapped");
+        assert_eq!(flow["mapperHash"], Value::Null);
+        assert_eq!(flow["mapperUrl"], Value::Null);
+        assert_eq!(flow["allowedHosts"], Value::Null);
+
+        let (status, verified) = get_json("/verify?sessionActionId=flow:test:unmapped").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(
+            verified["flow"],
+            json!({
+                "alias": "test:unmapped",
+                "mapper_hash": null,
+                "mapper_url": null,
+                "allowed_hosts": null,
+            })
+        );
+    }
+
+    #[tokio::test]
+    async fn verify_refuses_a_session_action_this_server_did_not_mint() {
+        for session_action_id in ["dummy-action-id", "flow:test:missing"] {
+            let (status, _) = get(&format!("/verify?sessionActionId={session_action_id}")).await;
+            assert_eq!(status, StatusCode::NOT_FOUND, "{session_action_id}");
+        }
+    }
 }
