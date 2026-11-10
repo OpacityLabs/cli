@@ -13,7 +13,7 @@ use commands::serve::serve;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
-use tracing::Level;
+use tracing::{warn, Level};
 
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
@@ -40,11 +40,15 @@ enum Commands {
         shell: String,
     },
 
-    /// Serve Lua flows over HTTP (and rebundle only the requested flow, if rebundle is enabled)
+    /// Serve Lua flows over HTTP, rebundling the requested flow on each request
     Serve {
-        /// Rebundle only the requested flow, if rebundle is enabled
-        #[arg(short, long)]
+        /// Deprecated: rebundling is on by default, this flag is no longer needed
+        #[arg(short, long, conflicts_with = "no_rebundle")]
         rebundle: bool,
+
+        /// Serve the already bundled flows without rebundling them
+        #[arg(short, long)]
+        no_rebundle: bool,
 
         /// Port to serve on
         #[arg(short, long, default_value_t = 8080)]
@@ -58,7 +62,16 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         Commands::Bundle => bundle(&cli.config, false)?,
         Commands::Analyze => analyze(&cli.config)?,
         Commands::GenerateCompletions { shell } => generate_completions(shell)?,
-        Commands::Serve { rebundle, port } => serve(&cli.config, *rebundle, *port).await?,
+        Commands::Serve {
+            rebundle,
+            no_rebundle,
+            port,
+        } => {
+            if *rebundle {
+                warn!("--rebundle is deprecated and no longer needed: rebundling is enabled by default. Use --no-rebundle to turn it off.");
+            }
+            serve(&cli.config, !*no_rebundle, *port).await?
+        }
     }
     Ok(())
 }
