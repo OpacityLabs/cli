@@ -87,7 +87,8 @@ opacity-cli completions zsh > ~/.oh-my-zsh/completions/_opacity-cli
 - `/v3/flows` gives each flow the session action id `flow:<alias>`.
 - `/verify` tells the notary which flow a session action belongs to: its alias, its mapper and its `allowed_hosts`.
 - A flow's mapper is the bundled mapper with the same alias in `mapping/`, as in production.
-- The SDK and the notary download the mapper from `http://localhost:<port>/mapper/<hash>`.
+- The SDK and the notary download the mapper from `<base URL>/mapper/<hash>`. The base URL is the address the SDK used to fetch the flow, so the notary gets the same URL even when it reaches the server at another address.
+- `--public-url <URL>` sets the base URL for every flow, for example `opacity-cli serve --public-url http://192.168.1.10:8080`.
 - A flow can only reach the hosts in its `allowed_hosts` in `opacity.toml`. A flow without `allowed_hosts` can reach any host.
 
 ### Mapper testing

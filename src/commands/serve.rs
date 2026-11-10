@@ -23,6 +23,7 @@ use std::{
 use tower::ServiceBuilder;
 use tower_http::trace::{self, TraceLayer};
 use tracing::{error, info, Level};
+use url::Url;
 use uuid::Uuid;
 
 use anyhow::{Context, Result};
@@ -70,10 +71,16 @@ struct FlowResponse {
 }
 
 impl FlowResponse {
-    fn new(flow: &Flow, script: String) -> Result<Self, String> {
-        let (mapper_hash, mapper_url) = flow_mapper(&flow.alias)?
+    /// `public_url` is this server's base URL as the SDK reached it. It is
+    /// saved for the flow, so `/verify` gives the notary the same mapper URL.
+    fn new(flow: &Flow, script: String, public_url: &Url) -> Result<Self, String> {
+        let (mapper_hash, mapper_url) = flow_mapper(&flow.alias, public_url)?
             .map(|mapper| (mapper.hash, mapper.url))
             .unzip();
+        FLOW_PUBLIC_URLS
+            .write()
+            .unwrap()
+            .insert(flow.alias.clone(), public_url.clone());
 
         Ok(Self {
             name: flow.alias.clone(),
@@ -113,7 +120,7 @@ struct SessionResponse {
     api_key_id: String,
 }
 
-async fn read_flow(name: &str) -> Result<FlowResponse, String> {
+async fn read_flow(name: &str, public_url: &Url) -> Result<FlowResponse, String> {
     let config = flows_config()?;
 
     let matched_flow = config
@@ -128,10 +135,10 @@ async fn read_flow(name: &str) -> Result<FlowResponse, String> {
     let script_content =
         fs::read_to_string(script_path).map_err(|_| String::from("Script file not found"))?;
 
-    FlowResponse::new(matched_flow, script_content)
+    FlowResponse::new(matched_flow, script_content, public_url)
 }
 
-async fn rebundle_and_read_flow(name: &str) -> Result<FlowResponse, String> {
+async fn rebundle_and_read_flow(name: &str, public_url: &Url) -> Result<FlowResponse, String> {
     let config = flows_config()?;
 
     let (matched_flow, platform_index) = ALIAS_TO_FLOW_MAP_AND_PLATFORM_INDEX
@@ -155,11 +162,11 @@ async fn rebundle_and_read_flow(name: &str) -> Result<FlowResponse, String> {
     let script_content =
         fs::read_to_string(script_path).map_err(|_| String::from("Script file not found"))?;
 
-    FlowResponse::new(matched_flow, script_content)
+    FlowResponse::new(matched_flow, script_content, public_url)
 }
 
-async fn flows(Query(query): Query<FlowQuery>) -> Response {
-    match read_flow(&query.name).await {
+async fn flows(headers: axum::http::HeaderMap, Query(query): Query<FlowQuery>) -> Response {
+    match read_flow(&query.name, &request_public_url(&headers)).await {
         Ok(response) => Json(response).into_response(),
         Err(e) => {
             let (status, message) = match e.as_str() {
@@ -249,8 +256,8 @@ pub fn get_alias_to_flow_map_and_platform_index(
     })
 }
 
-async fn flowsv3_v2(Query(query): Query<FlowQueryV3>) -> Response {
-    match rebundle_and_read_flow(&query.alias).await {
+async fn flowsv3_v2(headers: axum::http::HeaderMap, Query(query): Query<FlowQueryV3>) -> Response {
+    match rebundle_and_read_flow(&query.alias, &request_public_url(&headers)).await {
         Ok(response) => Json(response).into_response(),
         Err(e) => {
             let (status, message) = match e.as_str() {
@@ -346,7 +353,14 @@ fn verified_flow(session_action_id: &str) -> Response {
             .into_response();
     };
 
-    match flow_mapper(&flow.alias) {
+    let public_url = FLOW_PUBLIC_URLS
+        .read()
+        .unwrap()
+        .get(&flow.alias)
+        .cloned()
+        .unwrap_or_else(default_url);
+
+    match flow_mapper(&flow.alias, &public_url) {
         Ok(mapper) => {
             let (mapper_hash, mapper_url) = mapper.map(|mapper| (mapper.hash, mapper.url)).unzip();
             Json(serde_json::json!({
@@ -382,7 +396,78 @@ async fn sessions() -> Json<SessionResponse> {
 
 static CONFIG_PATH: OnceLock<String> = OnceLock::new();
 static SHOULD_REBUNDLE: OnceLock<bool> = OnceLock::new();
-static SERVE_PORT: OnceLock<u16> = OnceLock::new();
+/// `--public-url`
+static PUBLIC_URL: OnceLock<Url> = OnceLock::new();
+/// The base URL when no request names one: `--public-url`, or
+/// `http://localhost:<port>`
+static DEFAULT_URL: OnceLock<Url> = OnceLock::new();
+
+const PUBLIC_URL_SCHEME_ERROR: &str = "the URL must start with http:// or https://";
+
+/// Checks a `--public-url` value: an http or https URL with a host and
+/// nothing after it
+pub fn parse_public_url(value: &str) -> Result<Url, String> {
+    let url = Url::parse(value).map_err(|error| match error {
+        url::ParseError::RelativeUrlWithoutBase => PUBLIC_URL_SCHEME_ERROR.to_string(),
+        error => error.to_string(),
+    })?;
+    if !matches!(url.scheme(), "http" | "https") {
+        return Err(PUBLIC_URL_SCHEME_ERROR.into());
+    }
+
+    let scheme_and_host_only = url.has_host()
+        && url.path() == "/"
+        && url.query().is_none()
+        && url.fragment().is_none()
+        && url.username().is_empty()
+        && url.password().is_none();
+    if !scheme_and_host_only {
+        return Err("the URL must be a scheme and a host, such as http://192.168.1.10:8080".into());
+    }
+    Ok(url)
+}
+
+/// The default URL for `serve`: `--public-url`, or `http://localhost:<port>`
+fn default_url_for(public_url: Option<&Url>, port: u16) -> Result<Url, url::ParseError> {
+    match public_url {
+        Some(public_url) => Ok(public_url.clone()),
+        None => Url::parse(&format!("http://localhost:{port}")),
+    }
+}
+
+fn default_url() -> Url {
+    DEFAULT_URL
+        .get()
+        .cloned()
+        .expect("serve sets the default URL before it serves any request")
+}
+
+/// This server's base URL as the caller reached it: `--public-url`, else the
+/// `Host` the caller sent, else the default URL
+fn request_public_url(headers: &axum::http::HeaderMap) -> Url {
+    if let Some(public_url) = PUBLIC_URL.get() {
+        return public_url.clone();
+    }
+    headers
+        .get(axum::http::header::HOST)
+        .and_then(|host| host.to_str().ok())
+        .and_then(|host| parse_public_url(&format!("http://{host}")).ok())
+        .unwrap_or_else(default_url)
+}
+
+/// `path` on this server at `base`. An http or https base joins any
+/// relative path.
+fn server_url(base: &Url, path: &str) -> String {
+    base.join(path)
+        .expect("an http or https base URL joins any relative path")
+        .into()
+}
+
+/// The base URL `/v3/flows` gave the SDK, per flow alias. The SDK and the
+/// notary both sign the mapper URL, so `/verify` must give the notary the same
+/// string, even when the notary reaches this server at another address.
+static FLOW_PUBLIC_URLS: LazyLock<RwLock<HashMap<String, Url>>> =
+    LazyLock::new(|| RwLock::new(HashMap::new()));
 
 fn flows_config() -> Result<Config, String> {
     let config_path = CONFIG_PATH.get().map_or("./opacity.toml", String::as_str);
@@ -430,16 +515,13 @@ struct FlowMapper {
 }
 
 /// The flow's mapper is the bundled mapper with the flow's alias, as the
-/// backend pairs them. The SDK and the notary both sign the URL, so it has a
-/// fixed host rather than the request's: `/v3/flows` and `/verify` must give
-/// the same string.
-fn flow_mapper(alias: &str) -> Result<Option<FlowMapper>, String> {
-    let port = SERVE_PORT.get().copied().unwrap_or(8080);
+/// backend pairs them. Its URL is on `public_url`.
+fn flow_mapper(alias: &str, public_url: &Url) -> Result<Option<FlowMapper>, String> {
     let hash = index_mapper(alias)
         .map_err(|e| format!("Could not read the mapper of flow {alias}: {e}"))?;
 
     Ok(hash.map(|hash| FlowMapper {
-        url: format!("http://localhost:{port}/mapper/{hash}"),
+        url: server_url(public_url, &format!("mapper/{hash}")),
         hash,
     }))
 }
@@ -448,15 +530,12 @@ async fn resolve_mapper_alias(
     headers: axum::http::HeaderMap,
     Query(query): Query<ResolveMapperAliasQuery>,
 ) -> Response {
-    let default_host = format!("localhost:{}", SERVE_PORT.get().copied().unwrap_or(8080));
-    let host = headers
-        .get(axum::http::header::HOST)
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or(&default_host);
-
     match index_mapper(&query.alias) {
         Ok(Some(sha256)) => Json(MapperResponse {
-            mapper_url: format!("http://{host}/resolve_mapper_file?hash={sha256}"),
+            mapper_url: server_url(
+                &request_public_url(&headers),
+                &format!("resolve_mapper_file?hash={sha256}"),
+            ),
             mapper_hash: sha256,
         })
         .into_response(),
@@ -545,12 +624,17 @@ pub async fn serve(
     config_path: &str,
     should_rebundle: bool,
     port: u16,
+    public_url: Option<Url>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // initialize everything
     get_alias_to_flow_map_and_platform_index(&Config::from_file(config_path).unwrap());
     CONFIG_PATH.get_or_init(|| config_path.to_owned());
     SHOULD_REBUNDLE.get_or_init(|| should_rebundle);
-    SERVE_PORT.get_or_init(|| port);
+    let default_url = default_url_for(public_url.as_ref(), port)?;
+    DEFAULT_URL.get_or_init(|| default_url);
+    if let Some(public_url) = public_url {
+        PUBLIC_URL.get_or_init(|| public_url);
+    }
 
     initialize_mappers()?;
 
@@ -602,9 +686,14 @@ mod tests {
     const MAPPER: &str = "return function(params)\n  return params.payload\nend\n";
     /// `shasum -a 256` of `MAPPER`, the hash the notary checks the download against
     const MAPPER_HASH: &str = "729bac902d2df2f35e9af4a7132cae240eedafdb8303b0869aa81f4360675f9b";
+    /// The host the SDK uses, for example a device on the local network
+    const SDK_HOST: &str = "192.168.1.10:8080";
+    /// The host the notary uses, on the machine that runs the server
+    const NOTARY_HOST: &str = "localhost:8080";
 
-    /// Sets the server up as `serve` does, for a project with one flow that has
-    /// a mapper and allowed hosts, and one flow with neither
+    /// Sets the server up as `serve` does without `--public-url`, for a project
+    /// with a flow that has a mapper and allowed hosts, a flow with neither,
+    /// and a flow with a mapper that the SDK never fetches
     fn serve_fixture() {
         static FIXTURE: OnceLock<()> = OnceLock::new();
         FIXTURE.get_or_init(|| {
@@ -613,10 +702,12 @@ mod tests {
             let mapping = root.join("mapping");
             fs::create_dir_all(&bundled).unwrap();
             fs::create_dir_all(mapping.join("bundled")).unwrap();
-            for alias in ["test:mapped", "test:unmapped"] {
+            for alias in ["test:mapped", "test:unmapped", "test:unfetched"] {
                 fs::write(bundled.join(format!("{alias}.bundle.luau")), "return 1\n").unwrap();
             }
-            fs::write(mapping.join("bundled/test:mapped.bundle.luau"), MAPPER).unwrap();
+            for alias in ["test:mapped", "test:unfetched"] {
+                fs::write(mapping.join(format!("bundled/{alias}.bundle.luau")), MAPPER).unwrap();
+            }
 
             let config_path = root.join("opacity.toml");
             let config_toml = format!(
@@ -630,6 +721,7 @@ description = "Test platform"
 flows = [
     {{ name = "Mapped", alias = "test:mapped", description = "", path = "src/mapped.luau", allowed_hosts = ["api.example.com"] }},
     {{ name = "Unmapped", alias = "test:unmapped", description = "", path = "src/unmapped.luau" }},
+    {{ name = "Unfetched", alias = "test:unfetched", description = "", path = "src/unfetched.luau" }},
 ]
 "#,
                 bundled.display()
@@ -640,7 +732,7 @@ flows = [
             get_alias_to_flow_map_and_platform_index(&Config::from_file(&config_path).unwrap());
             CONFIG_PATH.get_or_init(|| config_path);
             SHOULD_REBUNDLE.get_or_init(|| false);
-            SERVE_PORT.get_or_init(|| 8080);
+            DEFAULT_URL.get_or_init(|| default_url_for(None, 8080).unwrap());
             MAPPERS_FOLDER.get_or_init(|| mapping.to_string_lossy().into_owned());
             MAPPERS_CONFIG.get_or_init(|| Config {
                 settings: Settings {
@@ -652,10 +744,11 @@ flows = [
         });
     }
 
-    /// Sends a GET with the headers the notary sends to `/verify`
-    async fn get(uri: &str) -> (StatusCode, Vec<u8>) {
+    /// Sends a GET to `host` with the headers the notary sends to `/verify`
+    async fn get(host: &str, uri: &str) -> (StatusCode, Vec<u8>) {
         serve_fixture();
         let request = Request::get(uri)
+            .header("host", host)
             .header("authorization", "Bearer key")
             .header("authorization-provider", "opacity")
             .body(Body::empty())
@@ -666,24 +759,25 @@ flows = [
         (status, body.to_vec())
     }
 
-    async fn get_json(uri: &str) -> (StatusCode, Value) {
-        let (status, body) = get(uri).await;
+    async fn get_json(host: &str, uri: &str) -> (StatusCode, Value) {
+        let (status, body) = get(host, uri).await;
         (status, serde_json::from_slice(&body).unwrap())
     }
 
     #[tokio::test]
     async fn verify_gives_the_notary_the_flow_rules_the_sdk_got() {
-        let (status, flow) = get_json("/v3/flows?alias=test:mapped").await;
+        let (status, flow) = get_json(SDK_HOST, "/v3/flows?alias=test:mapped").await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(flow["sessionActionId"], "flow:test:mapped");
         assert_eq!(flow["mapperHash"], MAPPER_HASH);
         assert_eq!(
             flow["mapperUrl"],
-            format!("http://localhost:8080/mapper/{MAPPER_HASH}")
+            format!("http://{SDK_HOST}/mapper/{MAPPER_HASH}")
         );
         assert_eq!(flow["allowedHosts"], json!(["api.example.com"]));
 
-        let (status, verified) = get_json("/verify?sessionActionId=flow:test:mapped").await;
+        let (status, verified) =
+            get_json(NOTARY_HOST, "/verify?sessionActionId=flow:test:mapped").await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(
             verified["flow"],
@@ -698,29 +792,37 @@ flows = [
 
     #[tokio::test]
     async fn the_mapper_url_serves_the_bundled_mapper() {
-        let (_, verified) = get_json("/verify?sessionActionId=flow:test:mapped").await;
-        let mapper_path = verified["flow"]["mapper_url"]
-            .as_str()
-            .unwrap()
-            .strip_prefix("http://localhost:8080")
-            .unwrap()
-            .to_owned();
+        let (_, verified) = get_json(NOTARY_HOST, "/verify?sessionActionId=flow:test:mapped").await;
+        let mapper_url = verified["flow"]["mapper_url"].as_str().unwrap();
+        let mapper_path = &mapper_url[mapper_url.find("/mapper/").unwrap()..];
 
-        let (status, body) = get(&mapper_path).await;
+        let (status, body) = get(NOTARY_HOST, mapper_path).await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(body, MAPPER.as_bytes());
     }
 
     #[tokio::test]
+    async fn a_flow_the_sdk_did_not_fetch_uses_the_default_url() {
+        let (status, verified) =
+            get_json(NOTARY_HOST, "/verify?sessionActionId=flow:test:unfetched").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(
+            verified["flow"]["mapper_url"],
+            format!("http://localhost:8080/mapper/{MAPPER_HASH}")
+        );
+    }
+
+    #[tokio::test]
     async fn a_flow_without_mapper_or_hosts_names_neither() {
-        let (status, flow) = get_json("/v3/flows?alias=test:unmapped").await;
+        let (status, flow) = get_json(SDK_HOST, "/v3/flows?alias=test:unmapped").await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(flow["sessionActionId"], "flow:test:unmapped");
         assert_eq!(flow["mapperHash"], Value::Null);
         assert_eq!(flow["mapperUrl"], Value::Null);
         assert_eq!(flow["allowedHosts"], Value::Null);
 
-        let (status, verified) = get_json("/verify?sessionActionId=flow:test:unmapped").await;
+        let (status, verified) =
+            get_json(NOTARY_HOST, "/verify?sessionActionId=flow:test:unmapped").await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(
             verified["flow"],
@@ -736,8 +838,48 @@ flows = [
     #[tokio::test]
     async fn verify_refuses_a_session_action_this_server_did_not_mint() {
         for session_action_id in ["dummy-action-id", "flow:test:missing"] {
-            let (status, _) = get(&format!("/verify?sessionActionId={session_action_id}")).await;
+            let (status, _) = get(
+                NOTARY_HOST,
+                &format!("/verify?sessionActionId={session_action_id}"),
+            )
+            .await;
             assert_eq!(status, StatusCode::NOT_FOUND, "{session_action_id}");
+        }
+    }
+
+    #[test]
+    fn the_default_url_is_the_public_url_flag_or_localhost() {
+        let flag = parse_public_url("http://cli.example.com").unwrap();
+        assert_eq!(default_url_for(Some(&flag), 9090), Ok(flag));
+        assert_eq!(
+            default_url_for(None, 9090).map(String::from),
+            Ok("http://localhost:9090/".to_string())
+        );
+    }
+
+    #[test]
+    fn a_public_url_is_a_scheme_and_a_host() {
+        assert_eq!(
+            parse_public_url("http://192.168.1.10:8080").map(String::from),
+            Ok("http://192.168.1.10:8080/".to_string())
+        );
+        assert_eq!(
+            parse_public_url("https://cli.example.com/").map(String::from),
+            Ok("https://cli.example.com/".to_string())
+        );
+        assert_eq!(
+            parse_public_url("192.168.1.10:8080"),
+            Err(PUBLIC_URL_SCHEME_ERROR.to_string())
+        );
+        for value in [
+            "localhost:8080",
+            "ftp://host",
+            "http://",
+            "http://host/mapper",
+            "http://host/?debug=1",
+            "http://user@host",
+        ] {
+            assert!(parse_public_url(value).is_err(), "{value}");
         }
     }
 }
