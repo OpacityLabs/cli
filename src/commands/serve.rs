@@ -15,6 +15,7 @@ use serde::{Deserialize, Serialize};
 use std::{
     collections::HashMap,
     fs,
+    io::ErrorKind,
     net::SocketAddr,
     path::PathBuf,
     sync::{LazyLock, RwLock},
@@ -24,7 +25,7 @@ use tower_http::trace::{self, TraceLayer};
 use tracing::{info, Level};
 use uuid::Uuid;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 
 use std::sync::OnceLock;
 
@@ -458,31 +459,28 @@ pub fn get_sha256(payload: &str) -> String {
     format!("{:x}", hasher.finalize())
 }
 
-fn initialize_mappers_folder_config_and_hashmaps(
-    mappers_location: &str,
-) -> Result<(), Box<dyn std::error::Error>> {
-    // try to read the file
-    let file_content = fs::read_to_string(mappers_location).map_err(|e| e.to_string())?;
+fn initialize_mappers() -> Result<()> {
+    let mappers_folder = "./mapping";
+    match fs::metadata(mappers_folder) {
+        Ok(metadata) => anyhow::ensure!(metadata.is_dir(), "mapping must be a directory"),
+        Err(error) if error.kind() == ErrorKind::NotFound => {
+            info!("No mapping directory found, not serving mappers");
+            return Ok(());
+        }
+        Err(error) => return Err(error).context("Failed to access mapping directory"),
+    }
 
-    // first line of the mappers file
-    let mappers_folder = file_content
-        .lines()
-        .next()
-        .ok_or("No mappers folder found")?
-        .to_string();
+    let config = Config::from_file("./mapping/opacity.toml").context(
+        "Failed to load mapping/opacity.toml. Run `cargo xtask aggregate` in mapping/ to generate it",
+    )?;
 
-    MAPPERS_FOLDER.set(mappers_folder.clone()).unwrap(); // should be initialized only once
     MAPPERS_CONFIG
-        .set(
-            Config::from_file(
-                PathBuf::from(mappers_folder.clone())
-                    .join("opacity.toml")
-                    .to_str()
-                    .unwrap(),
-            )
-            .unwrap(),
-        )
-        .unwrap(); // should be initialized only once
+        .set(config)
+        .map_err(|_| anyhow::anyhow!("Mapper config already initialized"))?;
+    MAPPERS_FOLDER
+        .set(mappers_folder.to_owned())
+        .map_err(|_| anyhow::anyhow!("Mapper folder already initialized"))?;
+    info!("Serving mappers from mapping/");
 
     Ok(())
 }
@@ -497,26 +495,7 @@ pub async fn serve(
     SHOULD_REBUNDLE.get_or_init(|| should_rebundle);
     SERVE_PORT.get_or_init(|| port);
 
-    match initialize_mappers_folder_config_and_hashmaps("./mappers.location") {
-        Ok(_) => {
-            info!(
-                "Mappers folder and config initialized, serving mappers from folder: {}",
-                MAPPERS_FOLDER.get().unwrap()
-            );
-        }
-        // if there is no mappers.location file, we are not going to serve mappers
-        Err(e) => match e.to_string().as_str() {
-            "File not found" => {
-                info!("No mappers.location file found, not serving mappers");
-            }
-            "No mappers folder found" => {
-                info!("No mappers folder found, not serving mappers");
-            }
-            _ => {
-                return Err(e);
-            }
-        },
-    }
+    initialize_mappers()?;
 
     let addr = SocketAddr::from(([0, 0, 0, 0], port));
 

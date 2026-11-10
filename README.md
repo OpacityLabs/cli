@@ -82,15 +82,7 @@ opacity-cli completions zsh > ~/.oh-my-zsh/completions/_opacity-cli
 
 ### Mapper testing
 
-To also have the `serve` command serve mappers, you need to create a `mappers.location` file in the root of the project with the following content:
-
-```
-<mappers-folder>
-```
-
-Where `<mappers-folder>` is the folder containing the mappers, the path has to be ABSOLUTE.
-
-To get it, just navigate to the mappers folder and run `pwd`.
+The `serve` command automatically serves mappers from `mapping/` in the current working directory. A `mappers.location` file is no longer used. If there is no `mapping/` directory, the server serves flows only.
 
 Every time you change a mapper, or the first time you want to serve the mappers, make sure you run the `cargo xtask aggregate && opacity-cli bundle` in the mappers folder.
 
