@@ -9,15 +9,17 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
+use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use chrono::Utc;
 use darklua_core::Resources;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::HashMap,
-    fs,
+    fmt, fs,
     io::ErrorKind,
     net::SocketAddr,
     path::PathBuf,
+    str::FromStr,
     sync::{LazyLock, RwLock},
 };
 use tower::ServiceBuilder;
@@ -71,16 +73,13 @@ struct FlowResponse {
 }
 
 impl FlowResponse {
-    /// `public_url` is this server's base URL as the SDK reached it. It is
-    /// saved for the flow, so `/verify` gives the notary the same mapper URL.
+    /// `public_url` is this server's base URL as the SDK reached it. The
+    /// session action id carries it, so `/verify` gives the notary the same
+    /// mapper URL.
     fn new(flow: &Flow, script: String, public_url: &Url) -> Result<Self, String> {
         let (mapper_hash, mapper_url) = flow_mapper(&flow.alias, public_url)?
             .map(|mapper| (mapper.hash, mapper.url))
             .unzip();
-        FLOW_PUBLIC_URLS
-            .write()
-            .unwrap()
-            .insert(flow.alias.clone(), public_url.clone());
 
         Ok(Self {
             name: flow.alias.clone(),
@@ -96,7 +95,11 @@ impl FlowResponse {
             },
             script,
             session_id: "dummy".to_string(),
-            session_action_id: session_action_id_for(&flow.alias),
+            session_action_id: SessionActionId {
+                alias: flow.alias.clone(),
+                base_url: public_url.clone(),
+            }
+            .to_string(),
             owner_type: LuaScriptOwnerType::Opacity,
             allowed_hosts: flow.allowed_hosts.clone(),
             mapper_hash,
@@ -321,12 +324,56 @@ async fn verify(headers: axum::http::HeaderMap, Query(query): Query<VerifyQuery>
     verified_flow(&session_action_id)
 }
 
-/// `/v3/flows` mints session action ids that name the flow, so `/verify` can
-/// tell the notary which flow a session action belongs to.
-const FLOW_SESSION_ACTION_PREFIX: &str = "flow:";
+/// The session action id `/v3/flows` mints and `/verify` reads, written as
+/// `flow:<alias>:<base URL in unpadded base64url>`.
+///
+/// The id is the only value that goes from the SDK through the notary to
+/// `/verify`. It carries the base URL of the mapper URL the SDK signs, so
+/// `/verify` gives the notary the same mapper URL without any server state.
+/// The notary appends the id to the `/verify` URL without encoding it, and
+/// base64url keeps it URL safe.
+#[derive(Debug, PartialEq)]
+struct SessionActionId {
+    alias: String,
+    base_url: Url,
+}
 
-fn session_action_id_for(alias: &str) -> String {
-    format!("{FLOW_SESSION_ACTION_PREFIX}{alias}")
+/// A session action id this server did not mint
+#[derive(Debug, PartialEq)]
+struct UnknownSessionActionId;
+
+impl SessionActionId {
+    const PREFIX: &str = "flow:";
+}
+
+impl fmt::Display for SessionActionId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let encoded_url = URL_SAFE_NO_PAD.encode(self.base_url.as_str());
+        write!(f, "{}{}:{encoded_url}", Self::PREFIX, self.alias)
+    }
+}
+
+impl FromStr for SessionActionId {
+    type Err = UnknownSessionActionId;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        // Aliases contain `:` and base64url does not, so the last `:` splits them
+        let (alias, encoded_url) = value
+            .strip_prefix(Self::PREFIX)
+            .and_then(|rest| rest.rsplit_once(':'))
+            .ok_or(UnknownSessionActionId)?;
+        let base_url = URL_SAFE_NO_PAD
+            .decode(encoded_url)
+            .ok()
+            .and_then(|bytes| String::from_utf8(bytes).ok())
+            .and_then(|url| parse_public_url(&url).ok())
+            .ok_or(UnknownSessionActionId)?;
+
+        Ok(Self {
+            alias: alias.to_owned(),
+            base_url,
+        })
+    }
 }
 
 /// The flow of a session action, as the notary reads it from `/verify`
@@ -342,9 +389,13 @@ struct VerifyFlow {
 /// action. It then applies that flow's mapper and allowed hosts.
 fn verified_flow(session_action_id: &str) -> Response {
     let flow = session_action_id
-        .strip_prefix(FLOW_SESSION_ACTION_PREFIX)
-        .and_then(|alias| ALIAS_TO_FLOW_MAP_AND_PLATFORM_INDEX.get()?.get(alias));
-    let Some((flow, _)) = flow else {
+        .parse::<SessionActionId>()
+        .ok()
+        .and_then(|id| {
+            let (flow, _) = ALIAS_TO_FLOW_MAP_AND_PLATFORM_INDEX.get()?.get(&id.alias)?;
+            Some((flow, id.base_url))
+        });
+    let Some((flow, public_url)) = flow else {
         info!("Unknown session action: {session_action_id}");
         return (
             axum::http::StatusCode::NOT_FOUND,
@@ -352,13 +403,6 @@ fn verified_flow(session_action_id: &str) -> Response {
         )
             .into_response();
     };
-
-    let public_url = FLOW_PUBLIC_URLS
-        .read()
-        .unwrap()
-        .get(&flow.alias)
-        .cloned()
-        .unwrap_or_else(default_url);
 
     match flow_mapper(&flow.alias, &public_url) {
         Ok(mapper) => {
@@ -462,12 +506,6 @@ fn server_url(base: &Url, path: &str) -> String {
         .expect("an http or https base URL joins any relative path")
         .into()
 }
-
-/// The base URL `/v3/flows` gave the SDK, per flow alias. The SDK and the
-/// notary both sign the mapper URL, so `/verify` must give the notary the same
-/// string, even when the notary reaches this server at another address.
-static FLOW_PUBLIC_URLS: LazyLock<RwLock<HashMap<String, Url>>> =
-    LazyLock::new(|| RwLock::new(HashMap::new()));
 
 fn flows_config() -> Result<Config, String> {
     let config_path = CONFIG_PATH.get().map_or("./opacity.toml", String::as_str);
@@ -688,6 +726,11 @@ mod tests {
     const MAPPER_HASH: &str = "729bac902d2df2f35e9af4a7132cae240eedafdb8303b0869aa81f4360675f9b";
     /// The host the SDK uses, for example a device on the local network
     const SDK_HOST: &str = "192.168.1.10:8080";
+    /// The base URL `/v3/flows` gives an SDK at `SDK_HOST`
+    static SDK_BASE_URL: LazyLock<Url> =
+        LazyLock::new(|| Url::parse(&format!("http://{SDK_HOST}/")).unwrap());
+    /// The host a second device uses
+    const OTHER_SDK_HOST: &str = "10.0.0.5:8080";
     /// The host the notary uses, on the machine that runs the server
     const NOTARY_HOST: &str = "localhost:8080";
 
@@ -764,11 +807,33 @@ flows = [
         (status, serde_json::from_slice(&body).unwrap())
     }
 
+    /// The session action id `/v3/flows` mints for an SDK at `SDK_HOST`
+    fn sdk_session_action_id(alias: &str) -> String {
+        SessionActionId {
+            alias: alias.to_owned(),
+            base_url: SDK_BASE_URL.clone(),
+        }
+        .to_string()
+    }
+
+    /// Calls `/verify` as the notary does for a flow the SDK got from `/v3/flows`
+    async fn verify(flow: &Value) -> (StatusCode, Value) {
+        let session_action_id = flow["sessionActionId"].as_str().unwrap();
+        get_json(
+            NOTARY_HOST,
+            &format!("/verify?sessionActionId={session_action_id}"),
+        )
+        .await
+    }
+
     #[tokio::test]
     async fn verify_gives_the_notary_the_flow_rules_the_sdk_got() {
         let (status, flow) = get_json(SDK_HOST, "/v3/flows?alias=test:mapped").await;
         assert_eq!(status, StatusCode::OK);
-        assert_eq!(flow["sessionActionId"], "flow:test:mapped");
+        assert_eq!(
+            flow["sessionActionId"],
+            sdk_session_action_id("test:mapped")
+        );
         assert_eq!(flow["mapperHash"], MAPPER_HASH);
         assert_eq!(
             flow["mapperUrl"],
@@ -776,8 +841,7 @@ flows = [
         );
         assert_eq!(flow["allowedHosts"], json!(["api.example.com"]));
 
-        let (status, verified) =
-            get_json(NOTARY_HOST, "/verify?sessionActionId=flow:test:mapped").await;
+        let (status, verified) = verify(&flow).await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(
             verified["flow"],
@@ -791,8 +855,46 @@ flows = [
     }
 
     #[tokio::test]
+    async fn verify_gives_each_device_the_mapper_url_it_got() {
+        let (_, first_device_flow) = get_json(SDK_HOST, "/v3/flows?alias=test:mapped").await;
+        let (_, second_device_flow) = get_json(OTHER_SDK_HOST, "/v3/flows?alias=test:mapped").await;
+        assert_eq!(
+            second_device_flow["mapperUrl"],
+            format!("http://{OTHER_SDK_HOST}/mapper/{MAPPER_HASH}")
+        );
+
+        for flow in [first_device_flow, second_device_flow] {
+            let (status, verified) = verify(&flow).await;
+            assert_eq!(status, StatusCode::OK);
+            assert_eq!(verified["flow"]["mapper_url"], flow["mapperUrl"]);
+        }
+    }
+
+    /// The server keeps nothing between `/v3/flows` and `/verify`, so a
+    /// restart in between, as in the `serve --rebundle` loop, changes nothing
+    #[tokio::test]
+    async fn verify_reads_the_base_url_from_the_session_action_id() {
+        let session_action_id = sdk_session_action_id("test:unfetched");
+        let (status, verified) = get_json(
+            NOTARY_HOST,
+            &format!("/verify?sessionActionId={session_action_id}"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(
+            verified["flow"]["mapper_url"],
+            format!("http://{SDK_HOST}/mapper/{MAPPER_HASH}")
+        );
+    }
+
+    #[tokio::test]
     async fn the_mapper_url_serves_the_bundled_mapper() {
-        let (_, verified) = get_json(NOTARY_HOST, "/verify?sessionActionId=flow:test:mapped").await;
+        let session_action_id = sdk_session_action_id("test:mapped");
+        let (_, verified) = get_json(
+            NOTARY_HOST,
+            &format!("/verify?sessionActionId={session_action_id}"),
+        )
+        .await;
         let mapper_url = verified["flow"]["mapper_url"].as_str().unwrap();
         let mapper_path = &mapper_url[mapper_url.find("/mapper/").unwrap()..];
 
@@ -802,27 +904,18 @@ flows = [
     }
 
     #[tokio::test]
-    async fn a_flow_the_sdk_did_not_fetch_uses_the_default_url() {
-        let (status, verified) =
-            get_json(NOTARY_HOST, "/verify?sessionActionId=flow:test:unfetched").await;
-        assert_eq!(status, StatusCode::OK);
-        assert_eq!(
-            verified["flow"]["mapper_url"],
-            format!("http://localhost:8080/mapper/{MAPPER_HASH}")
-        );
-    }
-
-    #[tokio::test]
     async fn a_flow_without_mapper_or_hosts_names_neither() {
         let (status, flow) = get_json(SDK_HOST, "/v3/flows?alias=test:unmapped").await;
         assert_eq!(status, StatusCode::OK);
-        assert_eq!(flow["sessionActionId"], "flow:test:unmapped");
+        assert_eq!(
+            flow["sessionActionId"],
+            sdk_session_action_id("test:unmapped")
+        );
         assert_eq!(flow["mapperHash"], Value::Null);
         assert_eq!(flow["mapperUrl"], Value::Null);
         assert_eq!(flow["allowedHosts"], Value::Null);
 
-        let (status, verified) =
-            get_json(NOTARY_HOST, "/verify?sessionActionId=flow:test:unmapped").await;
+        let (status, verified) = verify(&flow).await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(
             verified["flow"],
@@ -837,13 +930,56 @@ flows = [
 
     #[tokio::test]
     async fn verify_refuses_a_session_action_this_server_did_not_mint() {
-        for session_action_id in ["dummy-action-id", "flow:test:missing"] {
+        let unknown_flow = sdk_session_action_id("test:missing");
+        let ftp_base_url = SessionActionId {
+            alias: "test:mapped".to_owned(),
+            base_url: Url::parse("ftp://host/").unwrap(),
+        }
+        .to_string();
+        for session_action_id in [
+            "dummy-action-id",
+            "flow:test:mapped",
+            "flow:test:mapped:not-base64url!",
+            &ftp_base_url,
+            &unknown_flow,
+        ] {
             let (status, _) = get(
                 NOTARY_HOST,
                 &format!("/verify?sessionActionId={session_action_id}"),
             )
             .await;
             assert_eq!(status, StatusCode::NOT_FOUND, "{session_action_id}");
+        }
+    }
+
+    #[test]
+    fn a_session_action_id_reads_back_what_it_writes() {
+        for base_url in [
+            "http://192.168.1.10:8080/",
+            "https://cli.example.com/",
+            "http://[::1]:8080/",
+        ] {
+            let id = SessionActionId {
+                alias: "github:profile".to_owned(),
+                base_url: Url::parse(base_url).unwrap(),
+            };
+            assert_eq!(id.to_string().parse(), Ok(id));
+        }
+    }
+
+    /// The notary pastes the id into the `/verify` query as is. For these base
+    /// URLs, standard base64 would write a `+`, which a query reads as a
+    /// space, and `=` padding.
+    #[test]
+    fn a_session_action_id_is_url_safe() {
+        for base_url in ["http://a~b.test:8080/", "http://192.168.1.10:8080/"] {
+            let id = SessionActionId {
+                alias: "github:profile".to_owned(),
+                base_url: Url::parse(base_url).unwrap(),
+            }
+            .to_string();
+            let url_safe = |c: char| c.is_ascii_alphanumeric() || "-_:".contains(c);
+            assert!(id.chars().all(url_safe), "{id}");
         }
     }
 
