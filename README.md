@@ -80,6 +80,17 @@ Example:
 opacity-cli completions zsh > ~/.oh-my-zsh/completions/_opacity-cli
 ```
 
+### Local proofs
+
+`serve` is the backend for the SDK's Local environment and for a local notary.
+
+- `/v3/flows` gives each flow the session action id `flow:<alias>:<base URL in base64url>`.
+- `/verify` tells the notary which flow a session action belongs to: its alias, its mapper and its `allowed_hosts`.
+- A flow's mapper is the bundled mapper with the same alias in `mapping/`, as in production.
+- The SDK and the notary download the mapper from `<base URL>/mapper/<hash>`. The base URL is the address the SDK used to fetch the flow. `/verify` reads it from the session action id, so the notary gets the same URL even when it reaches the server at another address, when several devices use different addresses, and after a server restart.
+- `--public-url <URL>` sets the base URL for every flow, for example `opacity-cli serve --public-url http://192.168.1.10:8080`.
+- A flow can only reach the hosts in its `allowed_hosts` in `opacity.toml`. A flow without `allowed_hosts` can reach any host.
+
 ### Mapper testing
 
 The `serve` command automatically serves mappers from `mapping/` in the current working directory. A `mappers.location` file is no longer used. If there is no `mapping/` directory, the server serves flows only.

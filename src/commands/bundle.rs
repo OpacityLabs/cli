@@ -273,6 +273,7 @@ return M
             min_sdk_version: None,
             retrieves: None,
             path: src.join("entry.luau").to_string_lossy().into_owned(),
+            allowed_hosts: None,
         };
         let platform = Platform {
             name: "fixture".into(),

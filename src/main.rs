@@ -9,7 +9,8 @@ mod commands {
 use commands::analyze::analyze;
 use commands::bundle::bundle;
 use commands::generate_completions::generate_completions;
-use commands::serve::serve;
+use commands::serve::{parse_public_url, serve};
+use url::Url;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
@@ -49,6 +50,10 @@ enum Commands {
         /// Port to serve on
         #[arg(short, long, default_value_t = 8080)]
         port: u16,
+
+        /// Base URL the SDK and the notary download mappers from [default: the address the SDK used to fetch the flow]
+        #[arg(long, value_parser = parse_public_url)]
+        public_url: Option<Url>,
     },
 }
 
@@ -58,7 +63,11 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         Commands::Bundle => bundle(&cli.config, false)?,
         Commands::Analyze => analyze(&cli.config)?,
         Commands::GenerateCompletions { shell } => generate_completions(shell)?,
-        Commands::Serve { rebundle, port } => serve(&cli.config, *rebundle, *port).await?,
+        Commands::Serve {
+            rebundle,
+            port,
+            public_url,
+        } => serve(&cli.config, *rebundle, *port, public_url.clone()).await?,
     }
     Ok(())
 }
@@ -70,4 +79,35 @@ async fn main() -> Result<()> {
         .finish();
     tracing::subscriber::set_global_default(console_subscriber).unwrap();
     run().await.map_err(|err| anyhow::anyhow!("Error: {}", err))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn serve_takes_a_public_url() {
+        let cli = Cli::try_parse_from([
+            "opacity-cli",
+            "serve",
+            "--public-url",
+            "http://192.168.1.10:8080/",
+        ])
+        .unwrap();
+
+        let Commands::Serve { public_url, .. } = cli.command else {
+            panic!("expected the serve command");
+        };
+        assert_eq!(
+            public_url.as_ref().map(Url::as_str),
+            Some("http://192.168.1.10:8080/")
+        );
+    }
+
+    #[test]
+    fn serve_refuses_a_public_url_without_a_scheme() {
+        let parsed =
+            Cli::try_parse_from(["opacity-cli", "serve", "--public-url", "192.168.1.10:8080"]);
+        assert!(parsed.is_err());
+    }
 }

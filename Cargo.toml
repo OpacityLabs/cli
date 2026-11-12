@@ -23,3 +23,5 @@ uuid = { version = "1.16.0", features = ["v4"] }
 chrono = "0.4.40"
 tracing-subscriber = "0.3.19"
 sha2 = "0.10.9"
+url = "2.5.8"
+base64 = { version = "0.23.1", default-features = false, features = ["std"] }

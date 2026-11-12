@@ -52,6 +52,8 @@ pub struct Flow {
     pub min_sdk_version: Option<String>,
     pub retrieves: Option<Vec<String>>,
     pub path: String,
+    /// Hosts the flow's requests may reach; the SDK and the notary enforce them
+    pub allowed_hosts: Option<Vec<String>>,
 }
 
 impl Config {
