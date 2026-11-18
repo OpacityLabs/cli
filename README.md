@@ -5,7 +5,7 @@ A command-line tool for bundling and analyzing Luau files using luau-lsp. This t
 ## Features
 
 - **Bundling**: Bundle Luau files with configurable output formats
-- **Rebundle Mode**: Serve bundled flows over HTTP with optional file rebundling
+- **Serve**: Serve flows over HTTP, rebundling each flow when the SDK fetches it
 - **Static Analysis**: Analyze Luau files using luau-lsp for type checking, linting, and code quality
 - **Generate Completions**: Generate completions for the CLI
 - **Platform Organization**: Organize your Luau modules by platform and flows
@@ -33,9 +33,14 @@ opacity-cli bundle --config config.toml
 # Analyze your Luau files with luau-lsp
 opacity-cli analyze --config config.toml
 
-# Serve your Luau files, (--rebundle) will auto bundle new changes.
-opacity-cli serve --rebundle
+# Serve your Luau files, rebundling each flow when the SDK fetches it
+opacity-cli serve
+
+# Serve the bundles already in the output directory, without rebundling
+opacity-cli serve --no-rebundle
 ```
+
+`serve` rebundles a flow every time the SDK fetches it from `/v3/flows`, so a source edit applies on the next fetch. A flow whose source fails to bundle returns a 500, and the server log shows the bundler error. Flows added or changed in `opacity.toml` apply after a server restart.
 
 ### Source map
 
