@@ -14,7 +14,7 @@ use url::Url;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
-use tracing::Level;
+use tracing::{warn, Level};
 
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
@@ -41,11 +41,15 @@ enum Commands {
         shell: String,
     },
 
-    /// Serve Lua flows over HTTP (and rebundle only the requested flow, if rebundle is enabled)
+    /// Serve Lua flows over HTTP, rebundling each flow when the SDK fetches it
     Serve {
-        /// Rebundle only the requested flow, if rebundle is enabled
-        #[arg(short, long)]
+        /// Deprecated: has no effect, rebundling is the default
+        #[arg(short, long, hide = true, conflicts_with = "no_rebundle")]
         rebundle: bool,
+
+        /// Serve the already bundled flows without rebundling them
+        #[arg(long)]
+        no_rebundle: bool,
 
         /// Port to serve on
         #[arg(short, long, default_value_t = 8080)]
@@ -67,7 +71,13 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             rebundle,
             port,
             public_url,
-        } => serve(&cli.config, *rebundle, *port, public_url.clone()).await?,
+            no_rebundle,
+        } => {
+            if *rebundle {
+                warn!("--rebundle is deprecated and has no effect: rebundling is the default. Use --no-rebundle to turn it off.");
+            }
+            serve(&cli.config, !*no_rebundle, *port, public_url.clone()).await?
+        }
     }
     Ok(())
 }
@@ -84,6 +94,7 @@ async fn main() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use clap::CommandFactory;
 
     #[test]
     fn serve_takes_a_public_url() {
@@ -109,5 +120,68 @@ mod tests {
         let parsed =
             Cli::try_parse_from(["opacity-cli", "serve", "--public-url", "192.168.1.10:8080"]);
         assert!(parsed.is_err());
+    }
+
+    /// The `rebundle` and `no_rebundle` flags `serve` parses from these arguments
+    fn serve_flags(args: &[&str]) -> Result<(bool, bool), clap::error::ErrorKind> {
+        let cli = Cli::try_parse_from(["opacity-cli", "serve"].iter().chain(args))
+            .map_err(|error| error.kind())?;
+        let Commands::Serve {
+            rebundle,
+            no_rebundle,
+            ..
+        } = cli.command
+        else {
+            panic!("expected the serve command");
+        };
+        Ok((rebundle, no_rebundle))
+    }
+
+    #[test]
+    fn serve_rebundles_unless_told_not_to() {
+        assert_eq!(serve_flags(&[]), Ok((false, false)));
+        assert_eq!(serve_flags(&["--no-rebundle"]), Ok((false, true)));
+    }
+
+    #[test]
+    fn serve_still_takes_the_deprecated_rebundle_flag() {
+        assert_eq!(serve_flags(&["--rebundle"]), Ok((true, false)));
+        assert_eq!(serve_flags(&["-r"]), Ok((true, false)));
+    }
+
+    #[test]
+    fn serve_refuses_rebundle_together_with_no_rebundle() {
+        for args in [["--rebundle", "--no-rebundle"], ["-r", "--no-rebundle"]] {
+            assert_eq!(
+                serve_flags(&args),
+                Err(clap::error::ErrorKind::ArgumentConflict),
+                "{args:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn no_rebundle_has_no_short_flag() {
+        assert_eq!(
+            serve_flags(&["-n"]),
+            Err(clap::error::ErrorKind::UnknownArgument)
+        );
+    }
+
+    #[test]
+    fn serve_help_lists_no_rebundle_but_not_the_deprecated_flag() {
+        let help = Cli::command()
+            .find_subcommand_mut("serve")
+            .expect("serve is a subcommand")
+            .render_help()
+            .to_string();
+        let flags: Vec<&str> = help
+            .split_whitespace()
+            .map(|word| word.trim_end_matches(','))
+            .collect();
+
+        assert!(flags.contains(&"--no-rebundle"), "{help}");
+        assert!(!flags.contains(&"--rebundle"), "{help}");
+        assert!(!flags.contains(&"-r"), "{help}");
     }
 }

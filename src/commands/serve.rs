@@ -151,19 +151,17 @@ async fn rebundle_and_read_flow(name: &str, public_url: &Url) -> Result<FlowResp
         .ok_or("Flow not found")?;
     let flow_platform = &PLATFORM_VECTOR.get().unwrap()[*platform_index];
 
-    if *SHOULD_REBUNDLE.get().unwrap() {
+    let script_content = if *SHOULD_REBUNDLE.get().unwrap() {
         let bundle_options =
             create_options(&config, flow_platform, matched_flow).map_err(|e| e.to_string())?;
 
-        process_bundle(&Resources::from_file_system(), bundle_options)
-            .map_err(|e| e.to_string())?;
-    }
+        process_bundle(&Resources::from_file_system(), bundle_options).map_err(|e| e.to_string())?
+    } else {
+        let script_path =
+            PathBuf::from(config.settings.output_directory).join(format!("{}.bundle.luau", name));
 
-    let script_path =
-        PathBuf::from(config.settings.output_directory).join(format!("{}.bundle.luau", name));
-
-    let script_content =
-        fs::read_to_string(script_path).map_err(|_| String::from("Script file not found"))?;
+        fs::read_to_string(script_path).map_err(|_| String::from("Script file not found"))?
+    };
 
     FlowResponse::new(matched_flow, script_content, public_url)
 }
@@ -871,7 +869,7 @@ flows = [
     }
 
     /// The server keeps nothing between `/v3/flows` and `/verify`, so a
-    /// restart in between, as in the `serve --rebundle` loop, changes nothing
+    /// restart in between changes nothing
     #[tokio::test]
     async fn verify_reads_the_base_url_from_the_session_action_id() {
         let session_action_id = sdk_session_action_id("test:unfetched");

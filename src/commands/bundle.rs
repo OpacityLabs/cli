@@ -1,7 +1,7 @@
 use crate::config::Flow;
 use crate::config::{self, SimplePlatform};
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use darklua_core::rules::bundle::BundleRequireMode;
 use darklua_core::rules::{InjectGlobalValue, RemoveComments, Rule};
 use darklua_core::{
@@ -89,24 +89,53 @@ fn get_global_inject_rules(platform: &SimplePlatform, flow: &Flow) -> Vec<Box<dy
     rules
 }
 
-pub fn process_bundle(resources: &Resources, bundle_options: BundleOptions) -> Result<()> {
+/// Bundles a flow and returns the bundle. darklua writes to a staging file
+/// that then replaces the output in one rename, so bundles of one flow that
+/// run at once never read or leave behind each other's partial writes.
+pub fn process_bundle(resources: &Resources, bundle_options: BundleOptions) -> Result<String> {
+    let BundleOptions { opts, output } = bundle_options;
+    let staging = staging_path(&output)?;
+
+    let bundle = write_bundle(resources, opts.with_output(&staging), &staging).and_then(|bundle| {
+        std::fs::rename(&staging, &output)?;
+        Ok(bundle)
+    });
+    if bundle.is_err() {
+        // Best effort: darklua may have failed before it wrote the file
+        let _ = std::fs::remove_file(&staging);
+    }
+    bundle
+}
+
+/// A unique file next to `output`, so the rename stays on one file system.
+/// The leading dot and `.tmp` keep it out of `*.bundle.luau` listings.
+fn staging_path(output: &Path) -> Result<PathBuf> {
+    let file_name = output
+        .file_name()
+        .with_context(|| format!("{} has no file name", output.display()))?
+        .to_string_lossy();
+    Ok(output.with_file_name(format!(".{file_name}.{}.tmp", uuid::Uuid::new_v4())))
+}
+
+/// Runs darklua with its output at `path`, then appends the source map there
+fn write_bundle(resources: &Resources, opts: Options, path: &Path) -> Result<String> {
     let process_start = Instant::now();
-    let result = process(resources, bundle_options.opts)
-        .map_err(|e| anyhow::anyhow!("Processing failed: {:?}", e))?;
+    let result =
+        process(resources, opts).map_err(|e| anyhow::anyhow!("Processing failed: {:?}", e))?;
     if let Some(err) = result.collect_errors().first() {
         anyhow::bail!("Failed to process: {:?}", err);
     }
 
-    let mut bundle = std::fs::read_to_string(&bundle_options.output)?;
+    let mut bundle = std::fs::read_to_string(path)?;
     if !bundle.ends_with('\n') {
         bundle.push('\n');
     }
     let source_map = source_map_line(&result, resources, &std::env::current_dir()?)?;
     bundle.push_str(&source_map);
-    std::fs::write(&bundle_options.output, bundle)?;
+    std::fs::write(path, &bundle)?;
 
     println!("Successfully processed in {:?}", process_start.elapsed());
-    Ok(())
+    Ok(bundle)
 }
 
 fn compute_hashes(file_paths: &mut Vec<PathBuf>) -> Result<Vec<(String, String)>> {
@@ -259,12 +288,21 @@ end
 return M
 ";
 
-    fn bundle_fixture() -> (String, Vec<SourceMapFile>, PathBuf) {
+    /// A flow project in a new temp directory: `src/entry.luau` requires
+    /// `src/dep.luau`, and bundles go to `out/`
+    struct FixtureProject {
+        root: PathBuf,
+        config: Config,
+        platform: SimplePlatform,
+        flow: Flow,
+    }
+
+    fn fixture_project(dep: &str) -> FixtureProject {
         let root = std::env::temp_dir().join(format!("opacity-cli-{}", uuid::Uuid::new_v4()));
         let src = root.join("src");
         std::fs::create_dir_all(&src).unwrap();
         std::fs::write(src.join("entry.luau"), ENTRY).unwrap();
-        std::fs::write(src.join("dep.luau"), DEP).unwrap();
+        std::fs::write(src.join("dep.luau"), dep).unwrap();
 
         let flow = Flow {
             name: "Fixture".into(),
@@ -287,9 +325,25 @@ return M
             },
             platforms: vec![platform],
         };
-        let simple_platform = SimplePlatform::from(&config.platforms[0]);
+        let platform = SimplePlatform::from(&config.platforms[0]);
 
-        let options = create_options(&config, &simple_platform, &flow).unwrap();
+        FixtureProject {
+            root,
+            config,
+            platform,
+            flow,
+        }
+    }
+
+    fn bundle_fixture() -> (String, Vec<SourceMapFile>, PathBuf) {
+        let FixtureProject {
+            root,
+            config,
+            platform,
+            flow,
+        } = fixture_project(DEP);
+
+        let options = create_options(&config, &platform, &flow).unwrap();
         let output = options.output.clone();
         let resources = Resources::from_file_system();
         let result = process(&resources, options.opts).unwrap();
@@ -345,5 +399,50 @@ return M
         for pair in files.windows(2) {
             assert!(pair[0].end < pair[1].start, "{pair:?}");
         }
+    }
+
+    /// A dependency big enough that bundles of it overlap when they run at once
+    fn large_dep() -> String {
+        let functions: String = (0..3000)
+            .map(|i| format!("function M.f{i}(x)\n\treturn x + {i}\nend\n"))
+            .collect();
+        format!("local M = {{}}\n{functions}function M.value()\n\treturn \"dep\"\nend\nreturn M\n")
+    }
+
+    fn bundle_flow(project: &FixtureProject) -> String {
+        let options = create_options(&project.config, &project.platform, &project.flow).unwrap();
+        process_bundle(&Resources::from_file_system(), options).unwrap()
+    }
+
+    /// `serve` bundles a flow once per request, so requests that arrive
+    /// together bundle the same flow at the same time
+    #[test]
+    fn bundles_of_one_flow_that_run_at_once_match_a_lone_bundle() {
+        let project = fixture_project(&large_dep());
+        let lone_bundle = bundle_flow(&project);
+
+        let bundles: Vec<String> = std::thread::scope(|scope| {
+            let runs: Vec<_> = (0..16)
+                .map(|_| scope.spawn(|| bundle_flow(&project)))
+                .collect();
+            runs.into_iter().map(|run| run.join().unwrap()).collect()
+        });
+        let output_dir = PathBuf::from(&project.config.settings.output_directory);
+        let on_disk = std::fs::read_to_string(output_dir.join("fixture.bundle.luau")).unwrap();
+        let output_files: Vec<_> = std::fs::read_dir(&output_dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        std::fs::remove_dir_all(&project.root).unwrap();
+
+        assert_eq!(lone_bundle.matches(SOURCE_MAP_PREFIX).count(), 1);
+        for bundle in &bundles {
+            assert!(
+                bundle == &lone_bundle,
+                "a bundle differs from the lone bundle"
+            );
+        }
+        assert!(on_disk == lone_bundle, "the bundle on disk differs");
+        assert_eq!(output_files, ["fixture.bundle.luau"]);
     }
 }
